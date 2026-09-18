@@ -126,29 +126,74 @@ async function readConfig(project) {
       : `${CONFIG_FILE}: ${err.message}`;
   }
   const sections = [];
+  const hidden = [];
   for (const raw of Array.isArray(cfg.sections) ? cfg.sections : []) {
     const item = typeof raw === 'string' ? { path: raw } : raw;
     if (!item || typeof item.path !== 'string' || !item.path.trim()) continue;
     const rel = item.path.replace(/^\.?\//, '').replace(/\/$/, '');
     let exists = false;
     try { exists = (await fsp.stat(safeAbs(root, rel))).isDirectory(); } catch { exists = false; }
-    sections.push({
+    const entry = {
       path: rel,
       title: item.title || rel,
       icon: item.icon || '▸',
       description: item.description || '',
       exists,
-    });
+    };
+    (item.hidden ? hidden : sections).push(entry);
   }
   return {
     project: project.id,
     title: cfg.title || 'Навигация по документации',
     subtitle: cfg.subtitle || '',
     sections,
+    hidden,
     source,
     notice,
     file: CONFIG_FILE,
   };
+}
+
+// Запись состава меню обратно в docviewer.json проекта.
+// Порядок и состав задаёт клиент, а подписи, значки и описания уже известных разделов сохраняем.
+async function writeConfig(project, paths) {
+  const root = project.root;
+  const file = path.join(root, CONFIG_FILE);
+  let cfg = {};
+  try { cfg = JSON.parse(await fsp.readFile(file, 'utf8')); } catch { cfg = {}; }
+
+  const known = new Map();
+  for (const raw of Array.isArray(cfg.sections) ? cfg.sections : []) {
+    const item = typeof raw === 'string' ? { path: raw } : raw;
+    if (item && typeof item.path === 'string') known.set(item.path.replace(/\/$/, ''), item);
+  }
+
+  const sections = [];
+  const visible = new Set();
+  for (const rawPath of Array.isArray(paths) ? paths : []) {
+    const rel = String(rawPath || '').replace(/^\.?\//, '').replace(/\/$/, '');
+    if (!rel || visible.has(rel)) continue;
+    const abs = safeAbs(root, rel);                       // за пределы проекта не выпускаем
+    let isDir = false;
+    try { isDir = (await fsp.stat(abs)).isDirectory(); } catch { isDir = false; }
+    if (!isDir) continue;
+    visible.add(rel);
+    const { hidden: _drop, ...entry } = known.get(rel) || { path: rel, title: path.basename(rel) };
+    sections.push(entry);
+  }
+  // убранные из меню сохраняем с пометкой: вернутся со своим названием, значком и описанием
+  for (const [rel, item] of known) {
+    if (!visible.has(rel)) sections.push({ ...item, hidden: true });
+  }
+
+  const out = {
+    title: cfg.title || 'Навигация по документации',
+    ...(cfg.subtitle ? { subtitle: cfg.subtitle } : {}),
+    ...Object.fromEntries(Object.entries(cfg).filter(([k]) => !['title', 'subtitle', 'sections'].includes(k))),
+    sections,
+  };
+  await fsp.writeFile(file, JSON.stringify(out, null, 2) + '\n', 'utf8');
+  return readConfig(project);
 }
 
 const treeCache = new Map();
@@ -367,6 +412,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/tree') return json(res, 200, await getTree(project));
+
+    if (p === '/api/config' && req.method === 'POST') {
+      const body = await readBody(req);
+      return json(res, 200, await writeConfig(project, body.sections));
+    }
 
     if (p === '/api/config') return json(res, 200, await readConfig(project));
 

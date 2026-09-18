@@ -119,13 +119,23 @@ button, input { font: inherit; color: inherit; }
 .dir-item { padding: 6px 10px; border: 1px solid transparent; border-radius: 6px; cursor: pointer; }
 .dir-item:hover { background: var(--bg-soft); border-color: var(--line); }
 
-/* --- переключатель вида --- */
-.view-switch { display: flex; gap: 4px; background: var(--bg-soft); border: 1px solid var(--line); border-radius: 8px; padding: 3px; }
-.view-switch .vbtn { flex: 1; padding: 4px 10px; border: none; border-radius: 6px; background: transparent; color: var(--fg-dim); cursor: pointer; white-space: nowrap; }
-.view-switch .vbtn:hover { color: var(--fg); }
-.view-switch .vbtn.active { background: var(--bg); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.08); }
-.view-switch.big { width: max-content; margin: 0 0 22px; padding: 4px; }
-.view-switch.big .vbtn { padding: 7px 20px; font-size: 14px; }
+/* --- настройка меню прямо на странице --- */
+.home-title-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.home-title-row h1 { margin: 0; }
+.setup-btn { padding: 4px 14px; font-size: 13px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--bg); color: var(--fg-dim); cursor: pointer; }
+.setup-btn:hover { border-color: var(--accent); color: var(--accent); }
+.setup-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+.home-hint { margin: 12px 0 0; padding: 8px 12px; border: 1px dashed var(--accent); border-radius: 8px;
+  background: var(--accent-soft); font-size: 13px; }
+.home-head { margin-bottom: 22px; }
+.tile { position: relative; }
+.tile-mark { position: absolute; top: 12px; right: 14px; font-size: 16px; color: var(--fg-dim); }
+.home.editing .tile.editable { border-style: dashed; }
+.home.editing .tile.editable:hover { border-color: #d14; background: var(--bg); }
+.home.editing .tile.editable:hover .tile-mark { color: #d14; }
+.home.editing .chip.add { border-style: dashed; padding: 5px 12px; font-size: 12px; }
+.home.editing .chip.add:hover { border-color: var(--ok); color: var(--ok); }
 
 #home-btn { flex: none; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); cursor: pointer; }
 #home-btn:hover { border-color: var(--accent); color: var(--accent); }

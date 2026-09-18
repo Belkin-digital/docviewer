@@ -17,8 +17,7 @@ const LS = {
 const state = {
   tree: [], files: [], fileSet: new Set(), dirSet: new Set(), dirMap: new Map(), current: null,
   expanded: LS.open, filter: '', tab: 'tree', lastQuery: '',
-  config: null, sections: [], view: localStorage.getItem(key('view')) || 'focus',
-  projects: [], project: PROJECT,
+  config: null, sections: [], hidden: [], projects: [], project: PROJECT, editing: false,
 };
 
 /* ---------- «Заголовок С Заглавной» для читабельности плиток ---------- */
@@ -135,6 +134,7 @@ async function loadConfig() {
   try {
     state.config = await api('/api/config');
     state.sections = state.config.sections || [];
+    state.hidden = state.config.hidden || [];
   } catch (err) {
     state.config = { title: 'Навигация по документации', subtitle: '', sections: [], notice: 'Настройки разделов не прочитаны: ' + err.message };
     state.sections = [];
@@ -296,33 +296,24 @@ async function enhance(doc, filePath) {
 }
 
 /* ---------- меню разделов ---------- */
-function viewSwitch(where) {
-  const box = el('div', 'view-switch');
-  box.dataset.where = where;
-  for (const [view, label, hint] of [
-    ['simple', 'Простой', 'Всё дерево репозитория'],
-    ['focus', 'Фокусный', 'Только ключевые разделы из docviewer.json'],
-  ]) {
-    const b = el('button', 'vbtn', label);
-    b.dataset.view = view; b.title = hint;
-    box.appendChild(b);
+async function saveSections(paths) {
+  try {
+    state.config = await api('/api/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sections: paths }),
+    });
+    state.sections = state.config.sections || [];
+    state.hidden = state.config.hidden || [];
+    renderHome();
+    toast('Меню сохранено в docviewer.json');
+  } catch (err) {
+    toast('Не удалось сохранить: ' + err.message);
   }
-  return box;
 }
 
-function syncViewButtons() {
-  document.querySelectorAll('.view-switch .vbtn').forEach((b) => {
-    b.classList.toggle('active', b.dataset.view === state.view);
-  });
-}
-
-function setView(view) {
-  if (view === state.view) return;
-  state.view = view;
-  localStorage.setItem(key('view'), view);
-  syncViewButtons();
-  if (!state.current) renderHome();
-}
+const sectionPaths = () => state.sections.map((s) => s.path);
+const hideSection = (p) => saveSections(sectionPaths().filter((x) => x !== p));
+const showSection = (p) => saveSections([...sectionPaths(), p]);
 
 function sectionStats(secPath) {
   const files = state.files.filter((f) => f.path === secPath || f.path.startsWith(secPath + '/'));
@@ -346,17 +337,27 @@ function renderHome() {
   const doc = $('#doc');
   doc.textContent = '';
   const home = el('div', 'home');
+  if (state.editing) home.classList.add('editing');
   const cfg = state.config || { title: 'Навигация по документации', subtitle: '', sections: [] };
 
   const head = el('div', 'home-head');
-  head.appendChild(el('h1', null, cfg.title));
+  const titleRow = el('div', 'home-title-row');
+  titleRow.appendChild(el('h1', null, cfg.title));
+  const setup = el('button', 'setup-btn', state.editing ? 'Готово' : 'Настроить');
+  setup.title = state.editing
+    ? 'Выйти из настройки меню'
+    : 'Настроить состав меню: клик по разделу убирает его вниз, клик по папке внизу возвращает наверх';
+  if (state.editing) setup.classList.add('active');
+  setup.onclick = () => { state.editing = !state.editing; renderHome(); };
+  titleRow.appendChild(setup);
+  head.appendChild(titleRow);
   if (cfg.subtitle) head.appendChild(el('p', 'home-sub', cfg.subtitle));
   if (cfg.notice) head.appendChild(el('p', 'home-warn', cfg.notice));
+  if (state.editing) {
+    head.appendChild(el('p', 'home-hint',
+      'Клик по разделу убирает его вниз, клик по папке внизу поднимает в меню. Состав сразу пишется в docviewer.json.'));
+  }
   home.appendChild(head);
-
-  const sw = viewSwitch('home');
-  sw.classList.add('big');
-  home.appendChild(sw);
 
   const tiles = el('div', 'tiles big');
   for (const sec of state.sections) {
@@ -369,11 +370,10 @@ function renderHome() {
     if (sec.description) tile.appendChild(el('div', 'tile-desc', sec.description));
     if (!sec.exists) {
       tile.appendChild(el('div', 'tile-meta', 'папки нет: ' + sec.path));
-      tile.disabled = true;
     } else {
       const st = sectionStats(sec.path);
       tile.appendChild(el('div', 'tile-meta', `${sec.path}/ · ${docsWord(st.docs)} · ${filesWord(st.total)}`));
-      if (st.subs.length) {
+      if (st.subs.length && !state.editing) {
         const subs = el('div', 'tile-subs');
         for (const sub of st.subs) {
           const chip = el('span', 'chip', cap(sub.name));
@@ -382,32 +382,50 @@ function renderHome() {
         }
         tile.appendChild(subs);
       }
+    }
+    if (state.editing) {
+      tile.classList.add('editable');
+      tile.appendChild(el('span', 'tile-mark', '↓'));
+      tile.title = 'Убрать «' + cap(sec.title) + '» вниз';
+      tile.onclick = () => hideSection(sec.path);
+    } else if (sec.exists) {
       tile.onclick = () => navigate(sec.path);
+    } else {
+      tile.disabled = true;
     }
     tiles.appendChild(tile);
   }
   home.appendChild(tiles);
+  if (!state.sections.length) home.appendChild(el('div', 'empty', 'В меню нет разделов — поднимите папки из списка ниже'));
 
-  if (state.view === 'simple') {
-    const known = new Set(state.sections.map((s) => s.path));
-    const rest = state.tree.filter((n) => n.dir && !known.has(n.path));
-    if (rest.length) {
-      home.appendChild(el('div', 'home-rest-title', 'Остальные папки'));
-      const row = el('div', 'home-rest');
-      for (const n of rest) {
-        const chip = el('span', 'chip', n.name);
-        chip.onclick = () => navigate(n.path);
-        row.appendChild(chip);
+  // подвал: сначала убранные из меню разделы (со своими подписями), затем прочие папки проекта
+  const inMenu = new Set(state.sections.map((s) => s.path));
+  const named = new Map(state.hidden.filter((h) => h.exists).map((h) => [h.path, h]));
+  const rest = [];
+  for (const h of named.values()) rest.push({ path: h.path, label: cap(h.title) });
+  for (const n of state.tree) {
+    if (n.dir && !inMenu.has(n.path) && !named.has(n.path)) rest.push({ path: n.path, label: cap(n.name) });
+  }
+  if (rest.length) {
+    home.appendChild(el('div', 'home-rest-title', state.editing ? 'Не в меню — клик поднимает наверх' : 'Остальные папки'));
+    const row = el('div', 'home-rest');
+    for (const item of rest) {
+      const chip = el('span', 'chip', item.label);
+      if (state.editing) {
+        chip.classList.add('add');
+        chip.title = 'Поднять «' + item.label + '» в меню';
+        chip.onclick = () => showSection(item.path);
+      } else {
+        chip.onclick = () => navigate(item.path);
       }
-      home.appendChild(row);
+      row.appendChild(chip);
     }
+    home.appendChild(row);
   }
 
   doc.appendChild(home);
-  syncViewButtons();
   $('#scroller').scrollTop = 0;
 }
-
 /* ---------- схемы: прокрутка, масштаб, просмотр во весь экран ---------- */
 const zoomState = { scale: 1, svg: null };
 
@@ -1141,10 +1159,6 @@ function bindUI() {
     };
   });
 
-  document.addEventListener('click', (e) => {
-    const b = e.target.closest('.view-switch .vbtn');
-    if (b) setView(b.dataset.view);
-  });
   $('#home-btn').onclick = () => navigate('');
   $('#up-btn').onclick = () => {
     if (!state.current) return;
@@ -1216,7 +1230,6 @@ async function boot() {
   renderProjectSwitch(meta);
   await loadConfig();
   await loadTree();
-  syncViewButtons();
   connectEvents();
 
   const fromHash = decodeURIComponent(location.hash.slice(1)).split('#');

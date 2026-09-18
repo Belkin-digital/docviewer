@@ -1,0 +1,8 @@
+{
+  "//": "Скопируйте в projects.json и укажите свои репозитории. projects.json не версионируется.",
+  "projects": [
+    { "name": "CMK-PM", "path": "~/Git/CMK Workspace/CMK-PM" },
+    { "name": "AF-PM", "path": "~/Git/Agent Factory Workspace/AF-PM" },
+    { "name": "Заметки", "path": "~/My Drive/My Book", "id": "notes" }
+  ]
+}

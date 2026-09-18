@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="ru" data-theme="auto">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Документация — просмотрщик</title>
+<link rel="icon" type="image/svg+xml" href="/public/favicon.svg">
+<link rel="apple-touch-icon" href="/public/favicon.svg">
+<link rel="stylesheet" href="/vendor/highlight-theme-light.css" media="(prefers-color-scheme: light)">
+<link rel="stylesheet" href="/vendor/highlight-theme.css" media="(prefers-color-scheme: dark)">
+<link rel="stylesheet" href="/public/styles.css">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="side-head">
+      <div class="repo-row">
+        <div class="repo" id="repo-name" title="В меню разделов">…</div>
+        <button id="hide-side" title="Свернуть панель (⌘B)">‹</button>
+      </div>
+      <div class="side-tabs">
+        <button class="tab active" data-tab="tree">Файлы</button>
+        <button class="tab" data-tab="search">Поиск</button>
+      </div>
+      <input id="filter" type="search" placeholder="Фильтр по имени (⌘P)" autocomplete="off" spellcheck="false">
+      <input id="query" type="search" placeholder="Поиск по тексту, Enter" autocomplete="off" spellcheck="false" hidden>
+    </div>
+    <nav id="tree" class="pane"></nav>
+    <div id="results" class="pane" hidden></div>
+    <div class="side-foot">
+      <span id="status" class="dot" title="Связь с сервером"></span>
+      <span id="counter"></span>
+    </div>
+  </aside>
+  <div id="resizer" title="Потяните, чтобы изменить ширину; двойной клик — сбросить"></div>
+
+  <main id="main">
+    <header id="toolbar">
+      <div id="projects" class="projects" hidden></div>
+      <button id="show-side" title="Показать панель (⌘B)">›</button>
+      <button id="home-btn" title="Меню разделов">Меню</button>
+      <button id="up-btn" title="В папку, где лежит документ">↑ Папка</button>
+      <div id="crumbs"></div>
+      <div class="actions">
+        <button data-open="vscode" title="Открыть в Visual Studio Code">VS Code</button>
+        <button data-open="cursor" title="Открыть в Cursor">Cursor</button>
+        <button data-open="obsidian" title="Открыть в Obsidian">Obsidian</button>
+        <button data-open="reveal" title="Показать в Finder">Finder</button>
+        <button id="copy-path" title="Копировать путь от корня репозитория">Путь</button>
+      </div>
+    </header>
+    <div id="find" hidden>
+      <input id="find-input" type="text" placeholder="Поиск в документе" autocomplete="off" spellcheck="false">
+      <span id="find-count"></span>
+      <button data-find="prev" title="Предыдущее (⇧Enter)">↑</button>
+      <button data-find="next" title="Следующее (Enter)">↓</button>
+      <button data-find="close" title="Закрыть (Esc)">✕</button>
+    </div>
+    <div id="scroller">
+      <article id="doc" class="markdown"></article>
+      <nav id="toc"></nav>
+    </div>
+  </main>
+</div>
+
+<div id="palette" hidden>
+  <div class="palette-box">
+    <input id="palette-input" type="text" placeholder="Быстрое открытие: часть пути или имени" autocomplete="off" spellcheck="false">
+    <ul id="palette-list"></ul>
+  </div>
+</div>
+<div id="toast" hidden></div>
+<div id="zoom" hidden>
+  <div class="zoom-bar">
+    <button data-zoom="out" title="Мельче">−</button>
+    <button data-zoom="in" title="Крупнее">+</button>
+    <button data-zoom="fit">По ширине</button>
+    <button data-zoom="reset">1:1</button>
+    <span class="zoom-level">100%</span>
+    <button data-zoom="close" title="Закрыть (Esc)">✕</button>
+  </div>
+  <div class="zoom-stage"><div class="zoom-inner"></div></div>
+</div>
+
+<script src="/vendor/marked.min.js"></script>
+<script src="/vendor/highlight.min.js"></script>
+<script src="/vendor/mermaid.min.js"></script>
+<script src="/public/app.js"></script>
+</body>
+</html>

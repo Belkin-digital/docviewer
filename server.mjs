@@ -64,7 +64,7 @@ const TEXT_EXT = new Set([
   '.js', '.mjs', '.ts', '.puml', '.xml', '.csv', '.ndjson', '.toml', '.ini', '.sql', '.feature',
 ]);
 const MIME = {
-  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8', '.svg': 'image/svg+xml',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif',
@@ -390,6 +390,31 @@ async function readBody(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch { return {}; }
 }
 
+// Отдача файла проекта по «настоящему» пути: относительные ссылки внутри HTML тогда работают.
+async function serveProjectFile(res, p) {
+  const rest = p.slice(5);
+  const cut = rest.indexOf('/');
+  const projId = decodeURIComponent(cut < 0 ? rest : rest.slice(0, cut));
+  const rel = cut < 0 ? '' : decodeURIComponent(rest.slice(cut + 1));
+  const target = projectById(projId);
+  const abs = safeAbs(target.root, rel);
+  const buf = await fsp.readFile(abs);
+  return send(res, 200, buf, MIME[path.extname(abs).toLowerCase()] || 'application/octet-stream');
+}
+
+// Страницы проектов открываются на отдельном порту: у них свой origin, поэтому они
+// работают как обычные страницы (localStorage, скрипты), но не видят данных просмотрщика.
+let ASSET_ORIGIN = '';
+const assetServer = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  try {
+    if (url.pathname.startsWith('/raw/')) return serveProjectFile(res, url.pathname);
+    send(res, 404, 'not found');
+  } catch (err) {
+    send(res, 400, String(err.message || err));
+  }
+});
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const p = url.pathname;
@@ -407,6 +432,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/meta') {
       return json(res, 200, {
         root: project.root, name: project.name, project: project.id, host: os.hostname(),
+        assets: ASSET_ORIGIN,
         projects: PROJECTS.map(({ id, name }) => ({ id, name })),
       });
     }
@@ -434,6 +460,8 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { path: relOf(project.root, abs), binary: false, content, size: st.size, mtime: st.mtimeMs, ext });
     }
 
+    if (p.startsWith('/raw/')) return serveProjectFile(res, p);
+
     if (p === '/raw') {
       const abs = safeAbs(project.root, url.searchParams.get('p') || '');
       const buf = await fsp.readFile(abs);
@@ -444,6 +472,10 @@ const server = http.createServer(async (req, res) => {
       const q = (url.searchParams.get('q') || '').trim();
       if (q.length < 2) return json(res, 200, { query: q, hits: [] });
       return json(res, 200, { query: q, hits: await search(project, q) });
+    }
+
+    if (req.method === 'POST' && req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) {
+      return json(res, 403, { error: 'запрос не из просмотрщика' });   // защита от встроенных страниц
     }
 
     if (p === '/api/open' && req.method === 'POST') {
@@ -481,6 +513,9 @@ function listen(port, attempt = 0) {
   });
   server.listen(port, '127.0.0.1', () => {
     const uri = `http://127.0.0.1:${port}/`;
+    assetServer.listen(0, '127.0.0.1', () => {
+      ASSET_ORIGIN = `http://127.0.0.1:${assetServer.address().port}`;
+    });
     console.log(`Просмотрщик документации: ${uri}`);
     for (const pr of PROJECTS) console.log(`  ${pr.name} — ${pr.root}`);
     startWatcher();

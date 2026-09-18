@@ -6,6 +6,7 @@ const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 const TEXT_EXT = new Set(['.md', '.mdc', '.txt', '.py', '.sh', '.json', '.yml', '.yaml', '.html', '.css', '.js', '.mjs', '.ts', '.puml', '.xml', '.csv', '.ndjson', '.toml', '.ini', '.sql', '.feature']);
 const IMG_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp']);
+const PAGE_EXT = new Set(['.html', '.htm']);   // показываем страницей, а не исходником
 // какой проект открыт — в адресе (?project=…), чтобы ссылку можно было сохранить
 const PROJECT = new URLSearchParams(location.search).get('project') || '';
 const key = (name) => `dv.${PROJECT || 'default'}.${name}`;
@@ -17,7 +18,7 @@ const LS = {
 const state = {
   tree: [], files: [], fileSet: new Set(), dirSet: new Set(), dirMap: new Map(), current: null,
   expanded: LS.open, filter: '', tab: 'tree', lastQuery: '',
-  config: null, sections: [], hidden: [], projects: [], project: PROJECT, editing: false,
+  config: null, sections: [], hidden: [], projects: [], project: PROJECT, editing: false, showSource: false, assets: '',
 };
 
 /* ---------- «Заголовок С Заглавной» для читабельности плиток ---------- */
@@ -658,6 +659,40 @@ new ResizeObserver(() => {
   relayoutTimer = setTimeout(relayoutTables, 120);
 }).observe(document.documentElement);
 
+/* ---------- HTML-страницы: показываем как страницу ---------- */
+const pageUrl = (p) => (state.assets || '') + '/raw/' + encodeURIComponent(state.project || 'p') + '/' +
+  p.split('/').map(encodeURIComponent).join('/');
+
+function pageBar(p, data, showingSource) {
+  const bar = el('div', 'page-bar');
+  const openTab = el('button', null, '↗ В новой вкладке');
+  openTab.title = 'Открыть страницу отдельно — со всеми правами обычной страницы';
+  openTab.onclick = () => window.open(pageUrl(p), '_blank', 'noopener');
+  bar.appendChild(openTab);
+
+  const toggle = el('button', null, showingSource ? '▦ Страница' : '⟨⟩ Исходный код');
+  toggle.onclick = () => {
+    state.showSource = !showingSource;
+    openFile(p, { keepScroll: false });
+  };
+  bar.appendChild(toggle);
+  if (data && data.size) bar.appendChild(el('span', 'page-hint', `${Math.round(data.size / 1024)} КБ`));
+  return bar;
+}
+
+function renderPage(doc, p, data) {
+  doc.appendChild(pageBar(p, data, false));
+
+  const frame = document.createElement('iframe');
+  frame.className = 'page-frame';
+  frame.src = pageUrl(p);
+  // страница живёт на отдельном origin (свой порт), поэтому работает полноценно,
+  // но данные просмотрщика ей недоступны
+  frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-modals allow-downloads');
+  frame.setAttribute('referrerpolicy', 'no-referrer');
+  doc.appendChild(frame);
+}
+
 /* ---------- поиск внутри открытого документа ---------- */
 const finder = { hits: [], idx: -1, query: '' };
 
@@ -757,6 +792,7 @@ async function navigate(p, anchor) {
 }
 
 async function openPath(p, opts = {}) {
+  if (p !== state.current) state.showSource = false;   // исходник — только для текущего файла
   if (!p) return renderHome();
   if (state.dirSet.has(p)) return openDir(p);
   return openFile(p, opts);
@@ -873,6 +909,12 @@ async function openFile(p, { anchor = null, keepScroll = false } = {}) {
   doc.textContent = '';
   const ext = extname(p);
 
+  if (PAGE_EXT.has(ext) && !state.showSource) {
+    renderPage(doc, p, data);
+    $('#toc').textContent = '';
+    return;
+  }
+
   if (data.binary) {
     if (IMG_EXT.has(ext)) {
       const img = el('img'); img.src = '/raw?p=' + encodeURIComponent(p); doc.appendChild(img);
@@ -898,6 +940,7 @@ async function openFile(p, { anchor = null, keepScroll = false } = {}) {
     doc.appendChild(holder);
     await enhance(doc, p);
   } else {
+    if (PAGE_EXT.has(ext)) doc.appendChild(pageBar(p, data, true));
     const pre = el('pre');
     const code = el('code', 'language-' + ext.slice(1), data.content);
     pre.appendChild(code); doc.appendChild(pre);
@@ -1224,6 +1267,7 @@ async function boot() {
   const meta = await api('/api/meta');
   state.projects = meta.projects || [];
   state.project = meta.project;
+  state.assets = meta.assets || '';
   $('#repo-name').textContent = meta.name;
   $('#repo-name').title = meta.root;
   $('#repo-name').onclick = () => navigate('');

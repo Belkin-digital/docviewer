@@ -266,3 +266,13 @@ body.side-hidden #show-side { display: block; }
 .projects { flex: none; }
 .projects select { padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); cursor: pointer; font-weight: 600; max-width: 180px; }
 .projects select:hover { border-color: var(--accent); color: var(--accent); }
+
+
+/* --- просмотр HTML-страниц --- */
+.page-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.page-bar button { padding: 4px 12px; font-size: 13px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--fg-dim); cursor: pointer; }
+.page-bar button:hover { border-color: var(--accent); color: var(--accent); }
+.page-hint { font-size: 12px; color: var(--fg-dim); font-family: var(--mono); }
+.page-frame { width: 100%; height: calc(100vh - 190px); min-height: 420px; border: 1px solid var(--line);
+  border-radius: 10px; background: #fff; }

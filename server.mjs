@@ -142,12 +142,28 @@ async function readConfig(project) {
     };
     (item.hidden ? hidden : sections).push(entry);
   }
+  const favorites = [];
+  for (const raw of Array.isArray(cfg.favorites) ? cfg.favorites : []) {
+    const rel = String(raw || '').replace(/^\.?\//, '');
+    if (!rel) continue;
+    let exists = false, title = null, mtime = 0;
+    try {
+      const abs = safeAbs(root, rel);
+      const st = await fsp.stat(abs);
+      exists = st.isFile();
+      mtime = st.mtimeMs;
+      if (exists && /\.mdc?$/.test(rel)) title = await docTitle(abs, mtime);
+    } catch { exists = false; }
+    favorites.push({ path: rel, name: path.basename(rel), ext: path.extname(rel).toLowerCase(), title, exists });
+  }
+
   return {
     project: project.id,
     title: cfg.title || 'Навигация по документации',
     subtitle: cfg.subtitle || '',
     sections,
     hidden,
+    favorites,
     source,
     notice,
     file: CONFIG_FILE,
@@ -192,6 +208,25 @@ async function writeConfig(project, paths) {
     ...Object.fromEntries(Object.entries(cfg).filter(([k]) => !['title', 'subtitle', 'sections'].includes(k))),
     sections,
   };
+  await fsp.writeFile(file, JSON.stringify(out, null, 2) + '\n', 'utf8');
+  return readConfig(project);
+}
+
+// Избранные файлы живут в том же docviewer.json проекта.
+async function writeFavorite(project, rel, on) {
+  const file = path.join(project.root, CONFIG_FILE);
+  let cfg = {};
+  try { cfg = JSON.parse(await fsp.readFile(file, 'utf8')); } catch { cfg = {}; }
+
+  const clean = String(rel || '').replace(/^\.?\//, '');
+  if (!clean) throw new Error('не указан файл');
+  safeAbs(project.root, clean);                       // за пределы проекта не выпускаем
+
+  const list = (Array.isArray(cfg.favorites) ? cfg.favorites : []).map(String).filter(Boolean);
+  const next = on ? [...list.filter((x) => x !== clean), clean] : list.filter((x) => x !== clean);
+
+  const out = { ...cfg, favorites: next };
+  if (!Array.isArray(out.sections)) out.sections = [];
   await fsp.writeFile(file, JSON.stringify(out, null, 2) + '\n', 'utf8');
   return readConfig(project);
 }
@@ -438,6 +473,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/tree') return json(res, 200, await getTree(project));
+
+    if (p === '/api/favorite' && req.method === 'POST') {
+      const body = await readBody(req);
+      return json(res, 200, await writeFavorite(project, body.path, body.on !== false));
+    }
 
     if (p === '/api/config' && req.method === 'POST') {
       const body = await readBody(req);

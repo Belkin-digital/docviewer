@@ -276,3 +276,11 @@ body.side-hidden #show-side { display: block; }
 .page-hint { font-size: 12px; color: var(--fg-dim); font-family: var(--mono); }
 .page-frame { width: 100%; height: calc(100vh - 190px); min-height: 420px; border: 1px solid var(--line);
   border-radius: 10px; background: #fff; }
+
+
+/* --- избранное --- */
+#fav-btn[hidden] { display: none; }
+.actions #fav-btn.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.home .file-tiles { margin-bottom: 8px; }
+.home.editing .ftile.editable { border-style: dashed; }
+.home.editing .ftile.editable:hover { border-color: #d14; }

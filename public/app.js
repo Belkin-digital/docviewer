@@ -18,7 +18,8 @@ const LS = {
 const state = {
   tree: [], files: [], fileSet: new Set(), dirSet: new Set(), dirMap: new Map(), current: null,
   expanded: LS.open, filter: '', tab: 'tree', lastQuery: '',
-  config: null, sections: [], hidden: [], projects: [], project: PROJECT, editing: false, showSource: false, assets: '',
+  config: null, sections: [], hidden: [], favorites: [], projects: [], project: PROJECT,
+  editing: false, showSource: false, assets: '',
 };
 
 /* ---------- «Заголовок С Заглавной» для читабельности плиток ---------- */
@@ -136,6 +137,7 @@ async function loadConfig() {
     state.config = await api('/api/config');
     state.sections = state.config.sections || [];
     state.hidden = state.config.hidden || [];
+    state.favorites = state.config.favorites || [];
   } catch (err) {
     state.config = { title: 'Навигация по документации', subtitle: '', sections: [], notice: 'Настройки разделов не прочитаны: ' + err.message };
     state.sections = [];
@@ -305,11 +307,40 @@ async function saveSections(paths) {
     });
     state.sections = state.config.sections || [];
     state.hidden = state.config.hidden || [];
+    state.favorites = state.config.favorites || [];
     renderHome();
     toast('Меню сохранено в docviewer.json');
   } catch (err) {
     toast('Не удалось сохранить: ' + err.message);
   }
+}
+
+const isFavorite = (p) => state.favorites.some((f) => f.path === p);
+
+async function toggleFavorite(p, on = !isFavorite(p)) {
+  try {
+    state.config = await api('/api/favorite', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: p, on }),
+    });
+    state.favorites = state.config.favorites || [];
+    syncFavButton();
+    if (!state.current) renderHome();
+    toast(on ? 'Добавлено в избранное' : 'Убрано из избранного');
+  } catch (err) {
+    toast('Не получилось: ' + err.message);
+  }
+}
+
+function syncFavButton() {
+  const btn = $('#fav-btn');
+  const active = state.current && state.fileSet.has(state.current);
+  btn.hidden = !active;
+  if (!active) return;
+  const on = isFavorite(state.current);
+  btn.textContent = on ? '★ В избранном' : '☆ В избранное';
+  btn.classList.toggle('on', on);
+  btn.title = on ? 'Убрать из избранного' : 'Добавить в избранное — появится в меню разделов';
 }
 
 const sectionPaths = () => state.sections.map((s) => s.path);
@@ -332,6 +363,7 @@ function renderHome() {
   $('#crumbs').textContent = 'Меню разделов';
   document.querySelectorAll('.actions button').forEach((b) => { b.disabled = true; });
   $('#up-btn').hidden = true;
+  $('#fav-btn').hidden = true;
   $('#toc').textContent = '';
   renderTree();
 
@@ -359,6 +391,23 @@ function renderHome() {
       'Клик по разделу убирает его вниз, клик по папке внизу поднимает в меню. Состав сразу пишется в docviewer.json.'));
   }
   home.appendChild(head);
+
+  const favs = state.favorites.filter((f) => f.exists);
+  if (favs.length) {
+    home.appendChild(el('div', 'group-title', state.editing ? 'Избранное — клик убирает из списка' : 'Избранное'));
+    const grid = el('div', 'file-tiles');
+    for (const fav of favs) {
+      const tile = fileTile({ ...fav, dir: false });
+      if (state.editing) {
+        tile.classList.add('editable');
+        tile.title = 'Убрать «' + cap(fav.title || fav.name) + '» из избранного';
+        tile.onclick = () => toggleFavorite(fav.path, false);
+      }
+      grid.appendChild(tile);
+    }
+    home.appendChild(grid);
+    home.appendChild(el('div', 'group-title', 'Разделы'));
+  }
 
   const tiles = el('div', 'tiles big');
   for (const sec of state.sections) {
@@ -849,6 +898,7 @@ async function openDir(p) {
   localStorage.setItem(key('last'), p);
   renderCrumbs(p);
   $('#up-btn').hidden = true;
+  $('#fav-btn').hidden = true;      // избранное — про файлы, не про папки
   revealInTree(p);
   const doc = $('#doc');
   doc.textContent = '';
@@ -1006,6 +1056,7 @@ function renderCrumbs(p) {
   document.querySelectorAll('.actions button').forEach((b) => { b.disabled = false; });
   $('#up-btn').hidden = false;
   $('#up-btn').textContent = segs.length > 1 ? '↑ ' + cap(segs[segs.length - 2]) : '↑ Меню разделов';
+  syncFavButton();
 }
 
 /* ---------- открытие в приложениях ---------- */
@@ -1216,6 +1267,7 @@ function bindUI() {
 
   document.querySelectorAll('.actions button[data-open]').forEach((b) => { b.onclick = () => openIn(b.dataset.open); });
   $('#copy-path').onclick = () => copyPath(state.current);
+  $('#fav-btn').onclick = () => { if (state.current) toggleFavorite(state.current); };
 
   $('#palette-input').oninput = (e) => updatePalette(e.target.value);
   $('#palette').onclick = (e) => { if (e.target.id === 'palette') closePalette(); };

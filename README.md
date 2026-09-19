@@ -95,6 +95,7 @@ bash scripts/docviewer/start.sh
 | [`public/index.html`](public/index.html), [`public/app.js`](public/app.js), [`public/styles.css`](public/styles.css) | Интерфейс: дерево, разметка, поиск, палитра, просмотр схем, светлая и тёмная темы по настройке системы |
 | [`public/favicon.svg`](public/favicon.svg) | Значок приложения во вкладке браузера |
 | [`start.sh`](start.sh) | Докачивает `vendor/` при первом запуске и стартует сервер |
+| [`install-agent.sh`](install-agent.sh) | Ставит или снимает автозапуск через launchd |
 | [`projects.json`](projects.example.json) | Список репозиториев этой машины (локальный, в `.gitignore`) |
 | `docviewer.json` | Разделы меню — лежит в корне каждого репозитория и версионируется вместе с ним |
 

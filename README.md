@@ -7,7 +7,7 @@
 ## Запуск
 
 ```bash
-bash scripts/docviewer/start.sh
+bash ~/Git/docviewer/start.sh
 ```
 
 Адрес: <http://127.0.0.1:4179/> (если порт занят — берётся следующий свободный, адрес печатается в консоль).
@@ -18,6 +18,23 @@ bash scripts/docviewer/start.sh
 
 Переменные окружения: `DOCVIEWER_PORT` (порт), `DOCVIEWER_ROOTS` (пути проектов через `:`),
 `DOCVIEWER_ROOT` (один проект), `DOCVIEWER_NO_OPEN=1` (не открывать браузер).
+
+## Автозапуск
+
+Чтобы сервер поднимался сам при входе в систему и возвращался после сбоя:
+
+```bash
+bash ~/Git/docviewer/install-agent.sh
+```
+
+Ставится LaunchAgent `digital.belkin.docviewer`, журнал — `~/Library/Logs/docviewer.log`,
+браузер при автозапуске не открывается. Перезапуск после правки кода:
+
+```bash
+launchctl kickstart -k gui/$UID/digital.belkin.docviewer
+```
+
+Снять автозапуск и остановить сервер: `bash ~/Git/docviewer/install-agent.sh --uninstall`.
 
 ## Что умеет
 
@@ -91,6 +108,7 @@ bash scripts/docviewer/start.sh
 
 | Файл | Назначение |
 |------|------------|
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Устройство решения: принятые решения, схема, API, алгоритмы, эксплуатация |
 | [`server.mjs`](server.mjs) | HTTP-сервер без зависимостей: дерево, содержимое папки с названиями документов, чтение файлов, поиск, `open -a` для нативных приложений, SSE об изменениях |
 | [`public/index.html`](public/index.html), [`public/app.js`](public/app.js), [`public/styles.css`](public/styles.css) | Интерфейс: дерево, разметка, поиск, палитра, просмотр схем, светлая и тёмная темы по настройке системы |
 | [`public/favicon.svg`](public/favicon.svg) | Значок приложения во вкладке браузера |

@@ -385,41 +385,65 @@ function startWatcher() {
 
 // --- открытие в нативных приложениях ----------------------------------------
 const APPS = {
-  vscode: ['-a', 'Visual Studio Code'],
-  cursor: ['-a', 'Cursor'],
   obsidian: ['-a', 'Obsidian'],
   reveal: ['-R'],
   default: [],
 };
 
-// Новый чат Claude Code в нужной папке. У приложения нет адреса вида «новая сессия здесь»,
-// поэтому открываем Терминал в этой папке и запускаем в нём claude.
-const CLAUDE_CMD = process.env.DOCVIEWER_CLAUDE_CMD || 'claude';
-async function openClaude(abs) {
-  const st = await fsp.stat(abs);
-  const dir = st.isDirectory() ? abs : path.dirname(abs);
-  const script = `on run argv
-tell application "Terminal"
-  activate
-  do script "cd " & quoted form of (item 1 of argv) & " && ${CLAUDE_CMD}"
-end tell
-end run`;
+function run(cmd, args) {
+  console.log('открываю:', cmd, args.join(' '));   // видно в журнале, если кнопка «ничего не сделала»
   return new Promise((resolve, reject) => {
-    const p = spawn('osascript', ['-e', script, dir], { stdio: 'ignore' });
+    const p = spawn(cmd, args, { stdio: 'ignore' });
     p.on('error', reject);
-    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('osascript вернул код ' + code))));
+    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${path.basename(cmd)} вернул код ${code}`))));
   });
 }
 
-function openNative(app, abs) {
-  if (app === 'claude') return openClaude(abs);
+// Редакторы открываем их собственной командой: рабочей папкой окна становится корень проекта,
+// а документ открывается внутри него. `open -a` так не умеет — он просто подкидывает файл
+// в последнее активное окно с чужой рабочей папкой.
+// Сначала команда из самого бандла: одноимённые обёртки в PATH бывают чужими
+// (например, ~/.local/bin/cursor — это шим агента, который редактор не открывает).
+const EDITOR_CLIS = {
+  vscode: ['/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code', '/usr/local/bin/code', 'code'],
+  cursor: ['/Applications/Cursor.app/Contents/Resources/app/bin/cursor', '/usr/local/bin/cursor', 'cursor'],
+};
+const EDITOR_APPS = { vscode: 'Visual Studio Code', cursor: 'Cursor' };
+
+function findCli(candidates) {
+  for (const c of candidates) {
+    if (c.includes('/')) { if (fs.existsSync(c)) return c; continue; }
+    for (const dir of (process.env.PATH || '').split(':')) {
+      if (dir && fs.existsSync(path.join(dir, c))) return path.join(dir, c);
+    }
+  }
+  return '';
+}
+
+async function openEditor(app, abs, root) {
+  const cli = findCli(EDITOR_CLIS[app]);
+  if (!cli) return run('open', ['-a', EDITOR_APPS[app], abs]);   // обёртки нет — открываем как раньше
+  const isDir = (await fsp.stat(abs)).isDirectory();
+  return run(cli, isDir ? [root] : [root, abs]);
+}
+
+// Новый чат Claude Code в приложении: у него своя ссылка claude://code/new,
+// той же ссылкой открывает сессию пункт Finder «New Claude Code Session Here».
+// Папок можно передать несколько: первой корень проекта, второй — та, откуда кликнули.
+async function openClaude(abs, root) {
+  const st = await fsp.stat(abs);
+  const dir = st.isDirectory() ? abs : path.dirname(abs);
+  const folders = path.resolve(dir) === path.resolve(root) ? [root] : [root, dir];
+  const url = 'claude://code/new?' + folders.map((f) => 'folder=' + encodeURIComponent(f)).join('&') + '&source=external';
+  return run('open', [url]);
+}
+
+function openNative(app, abs, root) {
+  if (app === 'claude') return openClaude(abs, root);
+  if (EDITOR_CLIS[app]) return openEditor(app, abs, root);
   const args = APPS[app];
   if (!args) throw new Error('неизвестное приложение: ' + app);
-  return new Promise((resolve, reject) => {
-    const p = spawn('open', [...args, abs], { stdio: 'ignore' });
-    p.on('error', reject);
-    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('open вернул код ' + code))));
-  });
+  return run('open', [...args, abs]);
 }
 
 // --- значки приложений -------------------------------------------------------
@@ -606,7 +630,7 @@ const server = http.createServer(async (req, res) => {
       const body = await readBody(req);
       const target = projectById(body.project || url.searchParams.get('project'));
       const abs = safeAbs(target.root, body.path || '');
-      await openNative(body.app || 'default', abs);
+      await openNative(body.app || 'default', abs, target.root);
       return json(res, 200, { ok: true });
     }
 

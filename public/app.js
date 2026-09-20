@@ -18,7 +18,7 @@ const LS = {
 const state = {
   tree: [], files: [], fileSet: new Set(), dirSet: new Set(), dirMap: new Map(), current: null,
   expanded: LS.open, filter: '', tab: 'tree', lastQuery: '',
-  config: null, sections: [], hidden: [], favorites: [], projects: [], project: PROJECT,
+  config: null, sections: [], hidden: [], favorites: [], projects: [], project: PROJECT, root: '',
   editing: false, showSource: false, assets: '',
 };
 
@@ -362,6 +362,7 @@ function renderHome() {
   document.title = 'Документация — навигация';
   $('#crumbs').textContent = 'Меню разделов';
   document.querySelectorAll('.actions button').forEach((b) => { b.disabled = true; });
+  $('.actions button[data-open="claude"]').disabled = false;   // чат по корню проекта доступен и из меню
   $('#up-btn').hidden = true;
   $('#fav-btn').hidden = true;
   $('#toc').textContent = '';
@@ -873,7 +874,7 @@ function fileTile(entry) {
     tile.appendChild(first);
   }
   const copy = el('button', 'ftile-copy', '⧉');
-  copy.title = 'Копировать путь: ' + entry.path;
+  copy.title = 'Копировать полный путь: ' + entry.path;
   copy.onclick = (e) => { e.stopPropagation(); copyPath(entry.path); };
   tile.appendChild(copy);
 
@@ -1080,8 +1081,12 @@ function loadAppIcons() {
   });
 }
 
-async function copyPath(p) {
-  if (!p) return;
+// В буфер кладём полный путь от корня диска: его можно вставить в терминал или в диалог открытия.
+const fullPath = (p) => (state.root ? state.root.replace(/\/$/, '') + '/' + p : p);
+
+async function copyPath(rel) {
+  if (!rel) return;
+  const p = fullPath(rel);
   try {
     await navigator.clipboard.writeText(p);
     toast('Путь скопирован: ' + p);
@@ -1100,14 +1105,18 @@ async function copyPath(p) {
 }
 
 async function openIn(app, target = state.current) {
-  if (!target) return;
+  if (!target && app !== 'claude') return;   // на экране меню Claude Code открывается в корне проекта
+  target = target || '';
   try {
     await api('/api/open', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: target, app, project: PROJECT || undefined }),
     });
     if (app === 'reveal') toast('Показано в Finder');
-    else if (app === 'claude') toast('Claude Code: ' + (state.dirSet.has(target) ? target : dirname(target) || '/'));
+    else if (app === 'claude') {
+      const dir = state.dirSet.has(target) ? target : dirname(target);
+      toast(dir ? 'Новый чат Claude Code: ' + dir : 'Новый чат Claude Code в корне проекта');
+    }
     else toast('Открыто: ' + target.split('/').pop());
   } catch (err) { toast('Не получилось: ' + err.message); }
 }
@@ -1347,6 +1356,7 @@ async function boot() {
   state.projects = meta.projects || [];
   state.project = meta.project;
   state.assets = meta.assets || '';
+  state.root = meta.root || '';
   $('#repo-name').textContent = meta.name;
   $('#repo-name').title = meta.root;
   $('#repo-name').onclick = () => navigate('');

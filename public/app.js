@@ -355,7 +355,7 @@ function sectionStats(secPath) {
   return { total: files.length, docs, subs };
 }
 
-function renderHome() {
+function renderHome({ scroll = 0 } = {}) {
   closeFind();
   state.current = null;
   localStorage.removeItem(key('last'));
@@ -475,7 +475,7 @@ function renderHome() {
   }
 
   doc.appendChild(home);
-  $('#scroller').scrollTop = 0;
+  restoreScroll(scroll);
 }
 /* ---------- схемы: прокрутка, масштаб, просмотр во весь экран ---------- */
 const zoomState = { scale: 1, svg: null };
@@ -834,6 +834,7 @@ function bindFind() {
 
 /* ---------- открытие файла ---------- */
 async function navigate(p, anchor) {
+  saveScrollNow();   // уходим с этой записи истории — запоминаем, где стояли
   if (!p) { location.hash = ''; renderHome(); return; }
   if (state.fileSet.has(p) && !handledInBrowser(p)) return openIn('default', p);
   const target = '#' + p + (anchor ? '#' + anchor : '');
@@ -843,8 +844,8 @@ async function navigate(p, anchor) {
 
 async function openPath(p, opts = {}) {
   if (p !== state.current) state.showSource = false;   // исходник — только для текущего файла
-  if (!p) return renderHome();
-  if (state.dirSet.has(p)) return openDir(p);
+  if (!p) return renderHome(opts);
+  if (state.dirSet.has(p)) return openDir(p, opts);
   return openFile(p, opts);
 }
 
@@ -894,7 +895,7 @@ function folderTile(entry) {
   return tile;
 }
 
-async function openDir(p) {
+async function openDir(p, { scroll = 0 } = {}) {
   state.current = p;
   localStorage.setItem(key('last'), p);
   renderCrumbs(p);
@@ -935,17 +936,54 @@ async function openDir(p) {
   }
   if (!dirs.length && !files.length) doc.appendChild(el('div', 'empty', 'Папка пуста'));
 
-  $('#scroller').scrollTop = 0;
+  restoreScroll(scroll);
 }
 
 // Адрес возвращаем на прежнее место: файл ушёл в стороннее приложение,
 // а страница просмотрщика меняться не должна.
 function keepView(prev) {
   const rest = location.pathname + location.search;
-  history.replaceState(null, '', prev ? rest + '#' + prev : rest);
+  history.replaceState(history.state, '', prev ? rest + '#' + prev : rest);
 }
 
-async function openFile(p, { anchor = null, keepScroll = false } = {}) {
+/* ---------- позиция прокрутки в истории ---------- */
+// Позицию пишем в саму запись истории, поэтому браузерное «назад» возвращает документ туда,
+// откуда ушли по ссылке. У свежей записи состояния нет — такой документ открывается сверху.
+let scrollTimer = null, restoring = false;
+
+function rememberScroll() {
+  if (restoring) return;
+  clearTimeout(scrollTimer);
+  scrollTimer = setTimeout(() => {
+    const scroll = $('#scroller').scrollTop;
+    try { history.replaceState({ ...(history.state || {}), scroll }, ''); } catch { /* история недоступна */ }
+  }, 250);
+}
+
+const savedScroll = () => (history.state && history.state.scroll) || 0;
+
+// Перед сменой адреса пишем позицию без задержки: новая запись истории появится сейчас же.
+function saveScrollNow() {
+  clearTimeout(scrollTimer);
+  if (restoring) return;
+  try { history.replaceState({ ...(history.state || {}), scroll: $('#scroller').scrollTop }, ''); } catch { /* история недоступна */ }
+}
+
+// Схемы и картинки догружаются и меняют высоту страницы, поэтому позицию ставим несколько раз.
+function restoreScroll(top) {
+  const scroller = $('#scroller');
+  if (!(top > 0)) { scroller.scrollTop = 0; return; }
+  restoring = true;
+  let tries = 0;
+  const apply = () => {
+    scroller.scrollTop = top;
+    if (++tries < 4) setTimeout(apply, 140);
+    else restoring = false;
+  };
+  apply();   // без requestAnimationFrame: во вкладке на фоне он не сработает
+}
+
+async function openFile(p, { anchor = null, keepScroll = false, scroll = 0 } = {}) {
   const doc = $('#doc');
   const scroller = $('#scroller');
   const prevScroll = scroller.scrollTop;
@@ -1010,6 +1048,7 @@ async function openFile(p, { anchor = null, keepScroll = false } = {}) {
   }
 
   if (keepScroll) scroller.scrollTop = prevScroll;
+  else if (scroll > 0) restoreScroll(scroll);   // вернулись кнопкой «назад»
   else if (anchor) {
     const t = [...doc.querySelectorAll('h1,h2,h3')].find((h) => h.id === anchor || slugify(h.textContent) === anchor.toLowerCase());
     if (t) t.scrollIntoView({ block: 'start' }); else scroller.scrollTop = 0;
@@ -1335,6 +1374,7 @@ function bindUI() {
 
   // подсветка активного пункта оглавления
   $('#scroller').addEventListener('scroll', () => {
+    rememberScroll();
     const hs = [...$('#doc').querySelectorAll('h2, h3')];
     const top = $('#scroller').getBoundingClientRect().top + 90;
     let active = null;
@@ -1344,7 +1384,8 @@ function bindUI() {
 
   window.addEventListener('hashchange', () => {
     const [p, anchor] = decodeURIComponent(location.hash.slice(1)).split('#');
-    if (p) openPath(p, { anchor }); else renderHome();
+    const scroll = savedScroll();   // есть только у записи, с которой мы уже уходили
+    if (p) openPath(p, { anchor, scroll }); else renderHome({ scroll });
   });
 
   dark.addEventListener('change', () => { mermaidReady = false; if (state.current) openFile(state.current, { keepScroll: true }); });

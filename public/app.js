@@ -338,7 +338,7 @@ function syncFavButton() {
   btn.hidden = !active;
   if (!active) return;
   const on = isFavorite(state.current);
-  btn.textContent = on ? '★ В избранном' : '☆ В избранное';
+  btn.textContent = on ? '★' : '☆';
   btn.classList.toggle('on', on);
   btn.title = on ? 'Убрать из избранного' : 'Добавить в избранное — появится в меню разделов';
 }
@@ -937,18 +937,25 @@ async function openDir(p) {
   $('#scroller').scrollTop = 0;
 }
 
+// Адрес возвращаем на прежнее место: файл ушёл в стороннее приложение,
+// а страница просмотрщика меняться не должна.
+function keepView(prev) {
+  const rest = location.pathname + location.search;
+  history.replaceState(null, '', prev ? rest + '#' + prev : rest);
+}
+
 async function openFile(p, { anchor = null, keepScroll = false } = {}) {
   const doc = $('#doc');
   const scroller = $('#scroller');
   const prevScroll = scroller.scrollTop;
-  state.current = p;
-  localStorage.setItem(key('last'), p);
-  renderCrumbs(p);
-  revealInTree(p);   // дерево следует за навигацией через меню
+  const prev = state.current;
+  const ext = extname(p);
 
   let data;
   try { data = await api('/api/file?p=' + encodeURIComponent(p)); }
   catch (err) {
+    state.current = p;
+    renderCrumbs(p);
     doc.textContent = '';
     $('#toc').textContent = '';
     const gone = /ENOENT|no such file/i.test(err.message);
@@ -956,8 +963,18 @@ async function openFile(p, { anchor = null, keepScroll = false } = {}) {
     return;
   }
 
+  // показать такой файл интерфейс не может — отдаём системе и оставляем страницу как была
+  if (data.binary && !IMG_EXT.has(ext) && ext !== '.pdf') {
+    keepView(prev);
+    return openIn('default', p);
+  }
+
+  state.current = p;
+  localStorage.setItem(key('last'), p);
+  renderCrumbs(p);
+  revealInTree(p);   // дерево следует за навигацией через меню
+
   doc.textContent = '';
-  const ext = extname(p);
 
   if (PAGE_EXT.has(ext) && !state.showSource) {
     renderPage(doc, p, data);
@@ -968,18 +985,11 @@ async function openFile(p, { anchor = null, keepScroll = false } = {}) {
   if (data.binary) {
     if (IMG_EXT.has(ext)) {
       const img = el('img'); img.src = '/raw?p=' + encodeURIComponent(p); doc.appendChild(img);
-    } else if (ext === '.pdf') {
+    } else {
       const emb = document.createElement('embed');
       emb.src = withProject('/raw?p=' + encodeURIComponent(p)); emb.type = 'application/pdf';
       emb.style.cssText = 'width:100%;height:80vh;border:1px solid var(--line);border-radius:8px';
       doc.appendChild(emb);
-    } else {
-      const box = el('div', 'empty');
-      box.append(`Двоичный файл (${Math.round(data.size / 1024)} КБ). `);
-      const b = el('button', null, 'Открыть в приложении по умолчанию');
-      b.onclick = () => openIn('default');
-      box.appendChild(b);
-      doc.appendChild(box);
     }
     $('#toc').textContent = '';
   } else if (ext === '.md' || ext === '.mdc') {
@@ -1060,6 +1070,16 @@ function renderCrumbs(p) {
 }
 
 /* ---------- открытие в приложениях ---------- */
+// Значок берём у самого приложения; если его нет в системе, на кнопке остаётся подпись.
+function loadAppIcons() {
+  document.querySelectorAll('.actions button[data-open]').forEach((btn) => {
+    const img = new Image();
+    img.src = '/api/appicon?app=' + encodeURIComponent(btn.dataset.open);
+    img.alt = '';
+    img.onload = () => { btn.textContent = ''; btn.appendChild(img); };
+  });
+}
+
 async function copyPath(p) {
   if (!p) return;
   try {
@@ -1086,7 +1106,9 @@ async function openIn(app, target = state.current) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: target, app, project: PROJECT || undefined }),
     });
-    toast(app === 'reveal' ? 'Показано в Finder' : 'Открыто: ' + target.split('/').pop());
+    if (app === 'reveal') toast('Показано в Finder');
+    else if (app === 'claude') toast('Claude Code: ' + (state.dirSet.has(target) ? target : dirname(target) || '/'));
+    else toast('Открыто: ' + target.split('/').pop());
   } catch (err) { toast('Не получилось: ' + err.message); }
 }
 
@@ -1208,8 +1230,12 @@ function connectEvents() {
     if (msg.paths.some((p) => p === 'docviewer.json')) await loadConfig();
     await loadTree();
     if (!state.current) { renderHome(); return; }
-    const changed = msg.paths.some((p) => p === state.current);
-    if (changed && state.current) {
+    if (state.dirSet.has(state.current)) {
+      // открыта папка — перерисовываем её список, если изменилось что-то внутри
+      if (msg.paths.some((p) => p === state.current || dirname(p) === state.current)) await openDir(state.current);
+      return;
+    }
+    if (msg.paths.some((p) => p === state.current)) {
       await openFile(state.current, { keepScroll: true });
       toast('Обновлено: ' + state.current.split('/').pop());
     }
@@ -1266,6 +1292,7 @@ function bindUI() {
   $('#query').onkeydown = (e) => { if (e.key === 'Enter') runSearch(e.target.value); };
 
   document.querySelectorAll('.actions button[data-open]').forEach((b) => { b.onclick = () => openIn(b.dataset.open); });
+  loadAppIcons();
   $('#copy-path').onclick = () => copyPath(state.current);
   $('#fav-btn').onclick = () => { if (state.current) toggleFavorite(state.current); };
 

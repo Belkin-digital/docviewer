@@ -391,7 +391,28 @@ const APPS = {
   reveal: ['-R'],
   default: [],
 };
+
+// Новый чат Claude Code в нужной папке. У приложения нет адреса вида «новая сессия здесь»,
+// поэтому открываем Терминал в этой папке и запускаем в нём claude.
+const CLAUDE_CMD = process.env.DOCVIEWER_CLAUDE_CMD || 'claude';
+async function openClaude(abs) {
+  const st = await fsp.stat(abs);
+  const dir = st.isDirectory() ? abs : path.dirname(abs);
+  const script = `on run argv
+tell application "Terminal"
+  activate
+  do script "cd " & quoted form of (item 1 of argv) & " && ${CLAUDE_CMD}"
+end tell
+end run`;
+  return new Promise((resolve, reject) => {
+    const p = spawn('osascript', ['-e', script, dir], { stdio: 'ignore' });
+    p.on('error', reject);
+    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('osascript вернул код ' + code))));
+  });
+}
+
 function openNative(app, abs) {
+  if (app === 'claude') return openClaude(abs);
   const args = APPS[app];
   if (!args) throw new Error('неизвестное приложение: ' + app);
   return new Promise((resolve, reject) => {
@@ -399,6 +420,63 @@ function openNative(app, abs) {
     p.on('error', reject);
     p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('open вернул код ' + code))));
   });
+}
+
+// --- значки приложений -------------------------------------------------------
+// Берём настоящие значки установленных приложений: .icns из бандла → png через sips.
+// Приложения нет — отдаём 404, и в интерфейсе остаётся текстовая подпись кнопки.
+const APP_BUNDLES = {
+  vscode: '/Applications/Visual Studio Code.app',
+  cursor: '/Applications/Cursor.app',
+  obsidian: '/Applications/Obsidian.app',
+  claude: '/Applications/Claude.app',
+  reveal: '/System/Library/CoreServices/Finder.app',
+};
+const ICON_DIR = path.join(os.tmpdir(), 'docviewer-icons');
+
+async function icnsOf(bundle) {
+  const res = path.join(bundle, 'Contents', 'Resources');
+  try {
+    const plist = await fsp.readFile(path.join(bundle, 'Contents', 'Info.plist'), 'utf8');
+    const m = plist.match(/<key>CFBundleIconFile<\/key>\s*<string>([^<]+)<\/string>/);
+    if (m) {
+      const abs = path.join(res, m[1].endsWith('.icns') ? m[1] : m[1] + '.icns');
+      if (fs.existsSync(abs)) return abs;
+    }
+  } catch { /* двоичный plist — ищем значок по файлам */ }
+  const files = (await fsp.readdir(res).catch(() => [])).filter((f) => f.endsWith('.icns'));
+  let best = '', size = 0;
+  for (const f of files) {
+    const st = await fsp.stat(path.join(res, f)).catch(() => null);
+    if (st && st.size > size) { best = path.join(res, f); size = st.size; }
+  }
+  return best;
+}
+
+const iconJobs = new Map();
+async function appIcon(app) {
+  const bundle = APP_BUNDLES[app];
+  if (!bundle || !fs.existsSync(bundle)) return null;
+  const out = path.join(ICON_DIR, app + '.png');
+  try { await fsp.access(out); return out; } catch { /* ещё не сконвертирован */ }
+  let job = iconJobs.get(app);
+  if (!job) {
+    job = (async () => {
+      const icns = await icnsOf(bundle);
+      if (!icns) return null;
+      await fsp.mkdir(ICON_DIR, { recursive: true });
+      await new Promise((resolve, reject) => {
+        const p = spawn('sips', ['-s', 'format', 'png', '-Z', '64', icns, '--out', out], { stdio: 'ignore' });
+        p.on('error', reject);
+        p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('sips вернул код ' + code))));
+      });
+      return out;
+    })();
+    iconJobs.set(app, job);
+    const forget = () => iconJobs.delete(app);
+    job.then(forget, forget);
+  }
+  return job.catch(() => null);
 }
 
 // --- HTTP --------------------------------------------------------------------
@@ -473,6 +551,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/tree') return json(res, 200, await getTree(project));
+
+    if (p === '/api/appicon') {
+      const icon = await appIcon(url.searchParams.get('app') || '');
+      if (!icon) return send(res, 404, 'значок не найден');
+      return send(res, 200, await fsp.readFile(icon), 'image/png', { 'Cache-Control': 'max-age=86400' });
+    }
 
     if (p === '/api/favorite' && req.method === 'POST') {
       const body = await readBody(req);

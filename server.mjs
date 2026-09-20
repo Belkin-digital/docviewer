@@ -409,6 +409,11 @@ const EDITOR_CLIS = {
   cursor: ['/Applications/Cursor.app/Contents/Resources/app/bin/cursor', '/usr/local/bin/cursor', 'cursor'],
 };
 const EDITOR_APPS = { vscode: 'Visual Studio Code', cursor: 'Cursor' };
+// Cursor без -n отдаёт папку последнему активному окну: если это окно с несколькими корнями
+// (например, «Cursor Agents»), папка молча добавляется туда, а файл открывается в чужом проекте.
+// С -n он открывает окно именно на нужном проекте и при повторных кликах переиспользует его.
+// VS Code так делает сам, и -n ему только плодило бы окна.
+const EDITOR_FLAGS = { vscode: [], cursor: ['-n'] };
 
 function findCli(candidates) {
   for (const c of candidates) {
@@ -424,7 +429,8 @@ async function openEditor(app, abs, root) {
   const cli = findCli(EDITOR_CLIS[app]);
   if (!cli) return run('open', ['-a', EDITOR_APPS[app], abs]);   // обёртки нет — открываем как раньше
   const isDir = (await fsp.stat(abs)).isDirectory();
-  return run(cli, isDir ? [root] : [root, abs]);
+  const flags = EDITOR_FLAGS[app] || [];
+  return run(cli, isDir ? [...flags, root] : [...flags, root, abs]);
 }
 
 // Новый чат Claude Code в приложении: у него своя ссылка claude://code/new,
@@ -433,9 +439,13 @@ async function openEditor(app, abs, root) {
 async function openClaude(abs, root) {
   const st = await fsp.stat(abs);
   const dir = st.isDirectory() ? abs : path.dirname(abs);
+  const rel = relOf(root, abs);
   const folders = path.resolve(dir) === path.resolve(root) ? [root] : [root, dir];
-  const url = 'claude://code/new?' + folders.map((f) => 'folder=' + encodeURIComponent(f)).join('&') + '&source=external';
-  return run('open', [url]);
+  const params = folders.map((f) => 'folder=' + encodeURIComponent(f));
+  // Параметр file ссылка /code/new не пробрасывает (проверено по коду приложения), поэтому
+  // сам документ называем в поле ввода @-упоминанием — Claude Code понимает такие пути.
+  if (rel && rel !== '.') params.push('q=' + encodeURIComponent('@' + rel + (st.isDirectory() ? '/' : '') + ' '));
+  return run('open', ['claude://code/new?' + params.join('&') + '&source=external']);
 }
 
 function openNative(app, abs, root) {

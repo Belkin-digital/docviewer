@@ -5,3 +5,6 @@ vendor/
 projects.json
 
 .DS_Store
+
+# Папки этой машины: избранное и добавленные вручную
+workspaces.json

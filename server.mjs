@@ -41,7 +41,8 @@ function loadProjects() {
       continue;
     }
     const name = entry.name || path.basename(root);
-    out.push({ id: entry.id || slug(name), name, root });
+    // fav: false — проект открывается, но в списке наверху не показывается
+    out.push({ id: entry.id || slug(name), name, root, raw: entry.path, fav: entry.fav !== false });
   }
   if (!out.length) {
     const root = process.cwd();
@@ -50,8 +51,45 @@ function loadProjects() {
   return out;
 }
 
-const PROJECTS = loadProjects();
+let PROJECTS = loadProjects();
 const projectById = (id) => PROJECTS.find((p) => p.id === id) || PROJECTS[0];
+const PROJECTS_FILE = path.join(HERE, 'projects.json');
+const shortHome = (p) => (p.startsWith(os.homedir() + path.sep) ? '~' + p.slice(os.homedir().length) : p);
+
+// Список проектов правится прямо из интерфейса, поэтому перечитываем его на ходу:
+// новые папки получают наблюдателя, а клиенты узнают об изменении через SSE.
+async function writeProjects(entries) {
+  await fsp.writeFile(PROJECTS_FILE, JSON.stringify({ projects: entries }, null, 2) + '\n', 'utf8');
+  PROJECTS = loadProjects();
+  for (const project of PROJECTS) watchProject(project);
+  broadcast({ type: 'projects', at: Date.now() });
+}
+
+const projectEntries = () => PROJECTS.map((p) => ({
+  name: p.name, path: p.raw || shortHome(p.root), ...(p.fav ? {} : { fav: false }),
+}));
+
+// Папка становится проектом: без этого её нельзя открыть по ?project=
+async function ensureProject(abs, fav) {
+  const found = PROJECTS.find((p) => path.resolve(p.root) === path.resolve(abs));
+  const entries = projectEntries();
+  if (found) {
+    const entry = entries.find((e) => expand(e.path) === path.resolve(found.root));
+    if (entry) { if (fav === true) delete entry.fav; if (fav === false) entry.fav = false; }
+    if (fav !== undefined) await writeProjects(entries);
+    return (PROJECTS.find((p) => path.resolve(p.root) === path.resolve(abs)) || found).id;
+  }
+  const name = path.basename(abs) || abs;
+  entries.push({ name, path: shortHome(abs), ...(fav ? {} : { fav: false }) });
+  await writeProjects(entries);
+  const added = PROJECTS.find((p) => path.resolve(p.root) === path.resolve(abs));
+  return added ? added.id : '';
+}
+
+async function dropProject(abs) {
+  const entries = projectEntries().filter((e) => expand(e.path) !== path.resolve(abs));
+  await writeProjects(entries);
+}
 
 const SKIP_DIRS = new Set([
   '.git', 'node_modules', '.venv', '__pycache__', '.pytest_cache', '.idea',
@@ -373,14 +411,17 @@ function onFsEvent(project, relPath) {
   }, 120));
 }
 
-function startWatcher() {
-  for (const project of PROJECTS) {
-    try {
-      fs.watch(project.root, { recursive: true }, (_evt, name) => onFsEvent(project, name));
-    } catch (err) {
-      console.error(`fs.watch недоступен для ${project.name}:`, err.message);
-    }
+const watchers = new Map();
+function watchProject(project) {
+  if (watchers.has(project.root)) return;
+  try {
+    watchers.set(project.root, fs.watch(project.root, { recursive: true }, (_evt, name) => onFsEvent(project, name)));
+  } catch (err) {
+    console.error(`fs.watch недоступен для ${project.name}:`, err.message);
   }
+}
+function startWatcher() {
+  for (const project of PROJECTS) watchProject(project);
 }
 
 // --- открытие в нативных приложениях ----------------------------------------
@@ -456,6 +497,143 @@ function openNative(app, abs, root) {
   return run('open', [...args, abs]);
 }
 
+// --- папки, с которыми работали ----------------------------------------------
+// Собираем из того, что приложения уже хранят у себя: список проектов Claude Code,
+// рабочие папки окон Cursor и VS Code, cwd сессий Codex (ChatGPT). Плюс папки,
+// добавленные вручную, и список убранных в подвал — они лежат в workspaces.json.
+const HOME = os.homedir();
+const WORKSPACES_FILE = path.join(HERE, 'workspaces.json');
+const WS_TTL = 20000;
+let wsCache = { at: 0, items: [] };
+
+const readJson = async (file) => { try { return JSON.parse(await fsp.readFile(file, 'utf8')); } catch { return null; } };
+const claudeSlug = (p) => p.replace(/[^A-Za-z0-9]/g, '-');
+
+async function readWorkspacesFile() {
+  const data = (await readJson(WORKSPACES_FILE)) || {};
+  return { hidden: Array.isArray(data.hidden) ? data.hidden : [], extra: Array.isArray(data.extra) ? data.extra : [] };
+}
+const writeWorkspacesFile = (data) => fsp.writeFile(WORKSPACES_FILE, JSON.stringify(data, null, 2) + '\n', 'utf8');
+
+async function headOf(file, bytes = 4096) {
+  const fh = await fsp.open(file, 'r').catch(() => null);
+  if (!fh) return '';
+  try {
+    const buf = Buffer.alloc(bytes);
+    const { bytesRead } = await fh.read(buf, 0, bytes, 0);
+    return buf.slice(0, bytesRead).toString('utf8');
+  } finally { await fh.close(); }
+}
+
+async function scanClaude(add) {
+  const cfg = await readJson(path.join(HOME, '.claude.json'));
+  for (const p of Object.keys((cfg && cfg.projects) || {})) {
+    const st = await fsp.stat(path.join(HOME, '.claude', 'projects', claudeSlug(p))).catch(() => null);
+    add(p, 'claude', st ? st.mtimeMs : 0);
+  }
+}
+
+async function scanEditor(appDir, source, add) {
+  const base = path.join(HOME, 'Library/Application Support', appDir, 'User/workspaceStorage');
+  for (const dir of await fsp.readdir(base).catch(() => [])) {
+    const info = await readJson(path.join(base, dir, 'workspace.json'));
+    const uri = info && info.folder;
+    if (!uri || !uri.startsWith('file://')) continue;
+    const st = await fsp.stat(path.join(base, dir)).catch(() => null);
+    add(decodeURIComponent(uri.slice('file://'.length)), source, st ? st.mtimeMs : 0);
+  }
+}
+
+async function scanCodex(add) {
+  const base = path.join(HOME, '.codex', 'sessions');
+  const files = [];
+  const walk = async (dir, depth) => {
+    if (depth > 4 || files.length > 600) return;
+    for (const item of await fsp.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const abs = path.join(dir, item.name);
+      if (item.isDirectory()) await walk(abs, depth + 1);
+      else if (item.name.endsWith('.jsonl')) files.push(abs);
+    }
+  };
+  await walk(base, 0);
+  for (const file of files) {
+    const m = (await headOf(file)).match(/"cwd":"((?:[^"\\]|\\.)*)"/);
+    if (!m) continue;
+    let cwd; try { cwd = JSON.parse('"' + m[1] + '"'); } catch { continue; }
+    const st = await fsp.stat(file).catch(() => null);
+    add(cwd, 'chatgpt', st ? st.mtimeMs : 0);
+  }
+}
+
+async function collectWorkspaces() {
+  if (Date.now() - wsCache.at < WS_TTL) return wsCache.items;
+  const found = new Map();
+  const seenDir = new Map();
+  const isDir = async (p) => {
+    if (seenDir.has(p)) return seenDir.get(p);
+    const st = await fsp.stat(p).catch(() => null);
+    const ok = !!st && st.isDirectory();
+    seenDir.set(p, ok);
+    return ok;
+  };
+  const pending = [];
+  const add = (raw, source, at) => {
+    if (!raw || typeof raw !== 'string') return;
+    const abs = path.resolve(raw.replace(/\/$/, ''));
+    if (abs === '/' || abs === HOME) return;               // корень диска и домашняя папка — не проекты
+    pending.push({ abs, source, at: at || 0 });
+  };
+  await Promise.all([
+    scanClaude(add),
+    scanEditor('Cursor', 'cursor', add),
+    scanEditor('Code', 'vscode', add),
+    scanCodex(add),
+  ]);
+  for (const { abs, source, at } of pending) {
+    if (!(await isDir(abs))) continue;                     // папку могли удалить или переименовать
+    const item = found.get(abs) || { path: abs, name: path.basename(abs), sources: [], at: 0 };
+    if (!item.sources.includes(source)) item.sources.push(source);
+    item.at = Math.max(item.at, at);
+    found.set(abs, item);
+  }
+  wsCache = { at: Date.now(), items: [...found.values()] };
+  return wsCache.items;
+}
+
+async function workspaceList() {
+  const items = (await collectWorkspaces()).map((it) => ({ ...it, sources: [...it.sources] }));
+  const { hidden, extra } = await readWorkspacesFile();
+  const byPath = new Map(items.map((it) => [it.path, it]));
+  for (const raw of extra) {
+    const abs = expand(raw);
+    const st = await fsp.stat(abs).catch(() => null);
+    if (!st || !st.isDirectory()) continue;
+    const item = byPath.get(abs) || { path: abs, name: path.basename(abs), sources: [], at: st.mtimeMs };
+    item.manual = true;
+    byPath.set(abs, item);
+  }
+  for (const project of PROJECTS) {
+    const item = byPath.get(path.resolve(project.root));
+    if (item) continue;
+    byPath.set(path.resolve(project.root), {
+      path: path.resolve(project.root), name: project.name, sources: [], at: 0, manual: true,
+    });
+  }
+  const hiddenSet = new Set(hidden.map(expand));
+  const list = [...byPath.values()].map((it) => {
+    const project = PROJECTS.find((p) => path.resolve(p.root) === it.path);
+    return {
+      ...it,
+      hidden: hiddenSet.has(it.path),
+      listed: !!project,
+      fav: !!project && project.fav,
+      project: project ? project.id : '',
+    };
+  });
+  list.sort((a, b) => (b.fav - a.fav) || (b.at - a.at) || a.name.localeCompare(b.name, 'ru'));
+  return list;
+}
+
 // --- значки приложений -------------------------------------------------------
 // Берём настоящие значки установленных приложений: .icns из бандла → png через sips.
 // Приложения нет — отдаём 404, и в интерфейсе остаётся текстовая подпись кнопки.
@@ -464,6 +642,7 @@ const APP_BUNDLES = {
   cursor: '/Applications/Cursor.app',
   obsidian: '/Applications/Obsidian.app',
   claude: '/Applications/Claude.app',
+  chatgpt: '/Applications/ChatGPT.app',
   reveal: '/System/Library/CoreServices/Finder.app',
 };
 const ICON_DIR = path.join(os.tmpdir(), 'docviewer-icons');
@@ -573,14 +752,70 @@ const server = http.createServer(async (req, res) => {
     const project = projectById(url.searchParams.get('project'));
 
     if (p === '/api/projects') {
-      return json(res, 200, { projects: PROJECTS.map(({ id, name, root }) => ({ id, name, root })) });
+      return json(res, 200, { projects: PROJECTS.map(({ id, name, root, fav }) => ({ id, name, root, fav })) });
+    }
+
+    if (p === '/api/workspaces' && req.method === 'POST') {
+      const body = await readBody(req);
+      const abs = body.path ? expand(String(body.path)) : '';
+      const file = await readWorkspacesFile();
+      const drop = (list) => list.filter((x) => expand(x) !== abs);
+      if (!abs) return json(res, 400, { error: 'не указана папка' });
+      switch (body.action) {
+        case 'fav':
+          return json(res, 200, { project: await ensureProject(abs, body.on !== false) });
+        case 'use':
+          return json(res, 200, { project: await ensureProject(abs, undefined) });
+        case 'hide':
+          file.hidden = [...drop(file.hidden), shortHome(abs)];
+          break;
+        case 'show':
+          file.hidden = drop(file.hidden);
+          break;
+        case 'add': {
+          const st = await fsp.stat(abs).catch(() => null);
+          if (!st || !st.isDirectory()) return json(res, 400, { error: 'папки нет: ' + abs });
+          file.extra = [...drop(file.extra), shortHome(abs)];
+          break;
+        }
+        case 'remove':
+          file.extra = drop(file.extra);
+          file.hidden = drop(file.hidden);
+          if (PROJECTS.some((pr) => path.resolve(pr.root) === abs)) await dropProject(abs);
+          break;
+        default:
+          return json(res, 400, { error: 'неизвестное действие' });
+      }
+      await writeWorkspacesFile(file);
+      return json(res, 200, { ok: true });
+    }
+
+    if (p === '/api/workspaces') return json(res, 200, { items: await workspaceList() });
+
+    if (p === '/api/pickfolder' && req.method === 'POST') {
+      // родного выбора папки у браузера нет — просим системный диалог
+      const chosen = await new Promise((resolve) => {
+        const proc = spawn('osascript', ['-e', 'POSIX path of (choose folder with prompt "Папка проекта")'], {
+          stdio: ['ignore', 'pipe', 'ignore'],
+        });
+        let out = '';
+        proc.stdout.on('data', (chunk) => { out += chunk; });
+        proc.on('error', () => resolve(''));
+        proc.on('exit', (code) => resolve(code === 0 ? out.trim() : ''));
+      });
+      if (!chosen) return json(res, 200, { path: '' });     // отменили выбор
+      const file = await readWorkspacesFile();
+      const abs = chosen.replace(/\/$/, '');
+      file.extra = [...file.extra.filter((x) => expand(x) !== abs), shortHome(abs)];
+      await writeWorkspacesFile(file);
+      return json(res, 200, { path: abs });
     }
 
     if (p === '/api/meta') {
       return json(res, 200, {
-        root: project.root, name: project.name, project: project.id, host: os.hostname(),
+        root: project.root, name: project.name, project: project.id, host: os.hostname(), home: os.homedir(),
         assets: ASSET_ORIGIN,
-        projects: PROJECTS.map(({ id, name }) => ({ id, name })),
+        projects: PROJECTS.map(({ id, name, fav }) => ({ id, name, fav })),
       });
     }
 

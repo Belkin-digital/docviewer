@@ -19,6 +19,7 @@ const state = {
   tree: [], files: [], fileSet: new Set(), dirSet: new Set(), dirMap: new Map(), current: null,
   expanded: LS.open, filter: '', tab: 'tree', lastQuery: '',
   config: null, sections: [], hidden: [], favorites: [], projects: [], project: PROJECT, root: '',
+  home: '', meta: null, picking: false,
   editing: false, showSource: false, assets: '',
 };
 
@@ -481,7 +482,8 @@ function renderHome({ scroll = 0 } = {}) {
   document.title = 'Документация — навигация';
   $('#crumbs').textContent = 'Меню разделов';
   document.querySelectorAll('.actions button').forEach((b) => { b.disabled = true; });
-  $('.actions button[data-open="claude"]').disabled = false;   // чат по корню проекта доступен и из меню
+  // из меню приложения открывают сам проект: корень репозитория
+  document.querySelectorAll('.actions button[data-open]').forEach((b) => { b.disabled = false; });
   $('#up-btn').hidden = true;
   $('#fav-btn').hidden = true;
   $('#toc').textContent = '';
@@ -596,6 +598,139 @@ function renderHome({ scroll = 0 } = {}) {
   doc.appendChild(home);
   restoreScroll(scroll);
 }
+/* ---------- выбор проекта ---------- */
+// Папки берём из того, где вы уже работали: проекты Claude Code, окна Cursor и VS Code,
+// сессии Codex (ChatGPT). Звёздочка добавляет папку в список проектов наверху.
+const PICKER = '!projects';
+const SOURCE_NAMES = { claude: 'Claude Code', cursor: 'Cursor', vscode: 'VS Code', chatgpt: 'ChatGPT · Codex' };
+const shortPath = (p) => (state.home && p.startsWith(state.home) ? '~' + p.slice(state.home.length) : p);
+
+const ws = (action, path, extra = {}) => api('/api/workspaces', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ action, path, ...extra }),
+});
+
+async function refreshProjects() {
+  const data = await api('/api/projects');
+  state.projects = data.projects || [];
+  if (state.meta) renderProjectSwitch(state.meta);
+}
+
+async function openProjectFolder(item) {
+  const res = item.project ? { project: item.project } : await ws('use', item.path);
+  if (!res.project) { toast('Не удалось открыть папку'); return; }
+  location.href = `${location.pathname}?project=${encodeURIComponent(res.project)}`;
+}
+
+function wsTile(item, redraw) {
+  const tile = el('button', 'tile ws-tile');
+  const top = el('div', 'tile-top');
+  const apps = el('span', 'ws-apps');
+  for (const src of item.sources) {
+    const img = new Image();
+    img.src = '/api/appicon?app=' + encodeURIComponent(src);
+    img.alt = '';
+    img.title = 'Работали в ' + (SOURCE_NAMES[src] || src);
+    apps.appendChild(img);
+  }
+  if (!item.sources.length) apps.appendChild(el('span', 'ws-manual', '＋'));   // добавлена вручную
+  top.appendChild(apps);
+  top.appendChild(el('span', 'tile-title', cap(item.name)));
+  tile.appendChild(top);
+  tile.appendChild(el('div', 'tile-meta', shortPath(item.path)));
+
+  const star = el('button', 'ws-star' + (item.fav ? ' on' : ''), item.fav ? '★' : '☆');
+  star.title = item.fav ? 'Убрать из списка проектов' : 'Добавить в список проектов';
+  star.onclick = async (e) => {
+    e.stopPropagation();
+    await ws('fav', item.path, { on: !item.fav });
+    await refreshProjects();
+    redraw();
+  };
+  tile.appendChild(star);
+
+  if (state.picking) {
+    tile.classList.add('editable');
+    tile.appendChild(el('span', 'tile-mark', '↓'));
+    if (!item.sources.length) {          // вручную добавленную папку можно и удалить
+      const del = el('button', 'ws-del', '✕');
+      del.title = 'Убрать папку из списка совсем';
+      del.onclick = async (e) => { e.stopPropagation(); await ws('remove', item.path); redraw(); };
+      tile.appendChild(del);
+    }
+  }
+
+  tile.onclick = async () => {
+    if (state.picking) { await ws('hide', item.path); redraw(); return; }
+    openProjectFolder(item);
+  };
+  return tile;
+}
+
+async function renderPicker() {
+  closeFind();
+  state.current = null;
+  localStorage.removeItem(key('last'));
+  document.title = 'Проекты — просмотрщик';
+  $('#crumbs').textContent = 'Выбор проекта';
+  document.querySelectorAll('.actions button').forEach((b) => { b.disabled = true; });
+  $('#up-btn').hidden = true;
+  $('#fav-btn').hidden = true;
+  $('#toc').textContent = '';
+
+  const doc = $('#doc');
+  doc.textContent = '';
+  const home = el('div', 'home' + (state.picking ? ' editing' : ''));
+  const head = el('div', 'home-head');
+  const row = el('div', 'home-title-row');
+  row.appendChild(el('h1', null, 'Проекты'));
+
+  const setup = el('button', 'setup-btn' + (state.picking ? ' active' : ''), state.picking ? 'Готово' : 'Настроить');
+  setup.onclick = () => { state.picking = !state.picking; renderPicker(); };
+  row.appendChild(setup);
+
+  const add = el('button', 'setup-btn', '＋ Добавить папку');
+  add.title = 'Выбрать папку, которой ещё нет ни в одном проекте';
+  add.onclick = async () => {
+    const res = await api('/api/pickfolder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (res.path) { toast('Добавлено: ' + shortPath(res.path)); renderPicker(); }
+  };
+  row.appendChild(add);
+  head.appendChild(row);
+  head.appendChild(el('p', 'home-sub', 'Папки, с которыми вы работали в Claude Code, Cursor, VS Code и ChatGPT. ' +
+    'Звёздочка добавляет папку в список проектов наверху, «Настроить» убирает лишние в подвал.'));
+  home.appendChild(head);
+  doc.appendChild(home);
+
+  let data;
+  try { data = await api('/api/workspaces'); }
+  catch (err) { home.appendChild(el('div', 'empty', 'Не удалось собрать список папок: ' + err.message)); return; }
+
+  const items = data.items || [];
+  const shown = items.filter((it) => !it.hidden);
+  const hidden = items.filter((it) => it.hidden);
+  const grid = el('div', 'tiles');   // папок много, поэтому плашки компактнее, чем в меню разделов
+  for (const item of shown) grid.appendChild(wsTile(item, renderPicker));
+  home.appendChild(grid);
+  if (!shown.length) home.appendChild(el('div', 'empty', 'Все папки убраны в подвал'));
+
+  if (hidden.length) {
+    home.appendChild(el('div', 'group-title', 'Остальные папки'));
+    const chips = el('div', 'chips');
+    for (const item of hidden) {
+      const chip = el('button', 'chip', cap(item.name));
+      chip.title = shortPath(item.path);
+      chip.onclick = async () => {
+        if (state.picking) { await ws('show', item.path); renderPicker(); return; }
+        openProjectFolder(item);
+      };
+      chips.appendChild(chip);
+    }
+    home.appendChild(chips);
+  }
+  restoreScroll(0);
+}
+
 /* ---------- схемы: прокрутка, масштаб, просмотр во весь экран ---------- */
 const zoomState = { scale: 1, svg: null };
 
@@ -1291,8 +1426,7 @@ async function copyPath(rel) {
 }
 
 async function openIn(app, target = state.current) {
-  if (!target && app !== 'claude') return;   // на экране меню Claude Code открывается в корне проекта
-  target = target || '';
+  target = target || '';   // пусто — значит корень проекта: так работают кнопки в меню разделов
   try {
     await api('/api/open', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1303,7 +1437,7 @@ async function openIn(app, target = state.current) {
       const dir = state.dirSet.has(target) ? target : dirname(target);
       toast(dir ? 'Новый чат Claude Code: ' + dir : 'Новый чат Claude Code в корне проекта');
     }
-    else toast('Открыто: ' + target.split('/').pop());
+    else toast(target ? 'Открыто: ' + target.split('/').pop() : 'Открыт проект целиком');
   } catch (err) { toast('Не получилось: ' + err.message); }
 }
 
@@ -1420,6 +1554,7 @@ function connectEvents() {
   es.onerror = () => { dot.className = 'dot off'; dot.title = 'Нет связи с сервером'; };
   es.onmessage = async (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type === 'projects') { await refreshProjects(); return; }
     if (msg.type !== 'change') return;
     if (msg.project && PROJECT && msg.project !== PROJECT) return;
     if (msg.paths.some((p) => p === 'docviewer.json')) await loadConfig();
@@ -1441,12 +1576,14 @@ function connectEvents() {
 function renderProjectSwitch(meta) {
   const host = $('#projects');
   host.textContent = '';
-  if (state.projects.length < 2) { host.hidden = true; return; }
+  // в списке — только избранные проекты; остальные открываются через экран выбора
+  const shown = state.projects.filter((pr) => pr.fav !== false || pr.id === meta.project);
+  if (shown.length < 2) { host.hidden = shown.length < 1; }
   host.hidden = false;
   const select = document.createElement('select');
   select.id = 'project-select';
   select.title = 'Проект: ' + meta.root;
-  for (const pr of state.projects) {
+  for (const pr of shown) {
     const opt = document.createElement('option');
     opt.value = pr.id;
     opt.textContent = pr.name;
@@ -1474,6 +1611,10 @@ function bindUI() {
     };
   });
 
+  $('#pick-btn').onclick = () => {
+    if (location.hash === '#' + PICKER) renderPicker();
+    else { saveScrollNow(); location.hash = PICKER; }
+  };
   $('#home-btn').onclick = () => navigate('');
   $('#up-btn').onclick = () => {
     if (!state.current) return;
@@ -1532,7 +1673,9 @@ function bindUI() {
   window.addEventListener('hashchange', () => {
     const [p, anchor] = decodeURIComponent(location.hash.slice(1)).split('#');
     const scroll = savedScroll();   // есть только у записи, с которой мы уже уходили
-    if (p) openPath(p, { anchor, scroll }); else renderHome({ scroll });
+    if (p === PICKER) renderPicker();
+    else if (p) openPath(p, { anchor, scroll });
+    else renderHome({ scroll });
   });
 
   dark.addEventListener('change', () => { mermaidReady = false; if (state.current) openFile(state.current, { keepScroll: true }); });
@@ -1545,6 +1688,8 @@ async function boot() {
   state.project = meta.project;
   state.assets = meta.assets || '';
   state.root = meta.root || '';
+  state.home = meta.home || '';
+  state.meta = meta;
   $('#repo-name').textContent = meta.name;
   $('#repo-name').title = meta.root;
   $('#repo-name').onclick = () => navigate('');
@@ -1554,6 +1699,7 @@ async function boot() {
   connectEvents();
 
   const fromHash = decodeURIComponent(location.hash.slice(1)).split('#');
+  if (fromHash[0] === PICKER) { renderPicker(); return; }
   const start = fromHash[0] && (state.fileSet.has(fromHash[0]) || state.dirSet.has(fromHash[0])) && fromHash[0];
   if (start) { await openPath(start, { anchor: fromHash[1] }); revealInTree(start); }
   else renderHome();

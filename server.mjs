@@ -132,7 +132,11 @@ async function buildTree(root, dir = root) {
       const children = await buildTree(root, abs);
       out.push({ name: e.name, path: relOf(root, abs), dir: true, children });
     } else if (e.isFile()) {
-      out.push({ name: e.name, path: relOf(root, abs), dir: false, ext: path.extname(e.name).toLowerCase() });
+      const st = await fsp.stat(abs).catch(() => null);   // дата нужна для сортировки списков
+      out.push({
+        name: e.name, path: relOf(root, abs), dir: false,
+        ext: path.extname(e.name).toLowerCase(), mtime: st ? st.mtimeMs : 0,
+      });
     }
   }
   out.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name, 'ru') : a.dir ? -1 : 1));
@@ -333,7 +337,8 @@ async function listDir(project, rel) {
           else { files++; if (/\.mdc?$/.test(it.name)) docs++; }
         }
       }
-      out.push({ name: e.name, path: childRel, dir: true, files, docs });
+      const st = await fsp.stat(abs).catch(() => null);
+      out.push({ name: e.name, path: childRel, dir: true, files, docs, mtime: st ? st.mtimeMs : 0 });
     } else if (e.isFile()) {
       const ext = path.extname(e.name).toLowerCase();
       let title = null, mtime = 0;
@@ -606,6 +611,45 @@ async function workspaceList() {
   return list;
 }
 
+// --- переход по абсолютному пути ---------------------------------------------
+// Корень выбираем по очереди: сначала избранные проекты, потом всё, что не убрано в подвал,
+// и только затем остальное. Если подходит несколько корней — берём самый глубокий.
+const under = (root, target) => target === root || target.startsWith(root + path.sep);
+
+function deepest(roots, target) {
+  let best = '';
+  for (const root of roots) {
+    if (!root || !under(path.resolve(root), target)) continue;
+    const abs = path.resolve(root);
+    if (abs.length > best.length) best = abs;
+  }
+  return best;
+}
+
+async function resolveGoto(raw) {
+  let input = raw.trim().replace(/^['"]|['"]$/g, '');
+  if (input.startsWith('file://')) input = decodeURIComponent(input.slice('file://'.length));
+  if (!input) return { error: 'не указан путь' };
+  const target = expand(input).replace(/\/$/, '');
+  const st = await fsp.stat(target).catch(() => null);
+  if (!st) return { error: 'Файла нет: ' + target };
+
+  const items = await workspaceList();
+  const tiers = [
+    PROJECTS.filter((pr) => pr.fav).map((pr) => pr.root),
+    [...items.filter((it) => !it.hidden).map((it) => it.path), ...PROJECTS.map((pr) => pr.root)],
+    [...items.map((it) => it.path), ...PROJECTS.map((pr) => pr.root)],
+  ];
+  for (const tier of tiers) {
+    const root = deepest(tier, target);
+    if (!root) continue;
+    const project = await ensureProject(root, undefined);
+    if (!project) continue;
+    return { project, path: path.relative(root, target).split(path.sep).join('/'), root, dir: st.isDirectory() };
+  }
+  return { error: 'Файл вне проекта' };
+}
+
 // --- значки приложений -------------------------------------------------------
 // Берём настоящие значки установленных приложений: .icns из бандла → png через sips.
 // Приложения нет — отдаём 404, и в интерфейсе остаётся текстовая подпись кнопки.
@@ -762,6 +806,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === '/api/workspaces') return json(res, 200, { items: await workspaceList() });
+
+    if (p === '/api/goto' && req.method === 'POST') {
+      const body = await readBody(req);
+      return json(res, 200, await resolveGoto(String(body.path || '')));
+    }
 
     if (p === '/api/pickfolder' && req.method === 'POST') {
       // родного выбора папки у браузера нет — просим системный диалог

@@ -19,8 +19,8 @@ const state = {
   tree: [], files: [], fileSet: new Set(), dirSet: new Set(), dirMap: new Map(), current: null,
   expanded: LS.open, filter: '', tab: 'tree', lastQuery: '',
   config: null, sections: [], hidden: [], favorites: [], projects: [], project: PROJECT, root: '',
-  home: '', meta: null, picking: false, wsItems: null, wsQuery: '', wsSort: localStorage.getItem('dv.wssort') || 'date',
-  wsFav: localStorage.getItem('dv.wsfav') === '1',
+  home: '', meta: null, picking: false, wsItems: null, wsQuery: '',
+  wsFav: localStorage.getItem('dv.wsfav') === '1', sort: localStorage.getItem('dv.sort') || 'custom',
   editing: false, showSource: false, assets: '',
 };
 
@@ -506,6 +506,7 @@ function renderHome({ scroll = 0 } = {}) {
   if (state.editing) setup.classList.add('active');
   setup.onclick = () => { state.editing = !state.editing; renderHome(); };
   titleRow.appendChild(setup);
+  titleRow.appendChild(sortRow(() => renderHome({ scroll: $('#scroller').scrollTop }), { custom: 'Как настроено' }));
   head.appendChild(titleRow);
   if (cfg.subtitle) head.appendChild(el('p', 'home-sub', cfg.subtitle));
   if (cfg.notice) head.appendChild(el('p', 'home-warn', cfg.notice));
@@ -533,7 +534,7 @@ function renderHome({ scroll = 0 } = {}) {
   }
 
   const tiles = el('div', 'tiles big');
-  for (const sec of state.sections) {
+  for (const sec of sortSections(state.sections)) {
     const tile = el('button', 'tile');
     if (!sec.exists) tile.classList.add('gone');
     const top = el('div', 'tile-top');
@@ -582,7 +583,7 @@ function renderHome({ scroll = 0 } = {}) {
   if (rest.length) {
     home.appendChild(el('div', 'home-rest-title', state.editing ? 'Не в меню — клик поднимает наверх' : 'Остальные папки'));
     const row = el('div', 'home-rest');
-    for (const item of rest) {
+    for (const item of sortSections(rest)) {
       const chip = el('span', 'chip', item.label);
       if (state.editing) {
         chip.classList.add('add');
@@ -740,17 +741,8 @@ async function renderPicker({ refresh = false, keepScroll = false } = {}) {
     paint();
   };
   sorts.appendChild(onlyFav);
-  for (const [key, label] of [['date', 'По дате'], ['name', 'По алфавиту']]) {
-    const btn = el('button', 'chip' + (state.wsSort === key ? ' on' : ''), label);
-    btn.onclick = () => {
-      state.wsSort = key;
-      localStorage.setItem('dv.wssort', key);
-      [...sorts.children].forEach((c) => c.classList.toggle('on', c === btn));
-      paint();
-    };
-    sorts.appendChild(btn);
-  }
   tools.appendChild(sorts);
+  tools.appendChild(sortRow(() => paint(), { fallback: 'date' }));
   head.appendChild(tools);
 
   head.appendChild(el('p', 'home-sub', 'Папки, с которыми вы работали в Claude Code, Cursor и VS Code. ' +
@@ -778,13 +770,10 @@ async function renderPicker({ refresh = false, keepScroll = false } = {}) {
   function paint() {
     list.textContent = '';
     const needle = state.wsQuery.trim().toLowerCase();
-    const byName = (a, b) => a.name.localeCompare(b.name, 'ru');
-    const order = state.wsSort === 'name' ? byName : (a, b) => (b.at - a.at) || byName(a, b);
-    const found = (state.wsItems || [])
+    const found = sortEntries((state.wsItems || [])
       .filter((it) => !state.wsFav || it.fav)
-      .filter((it) => !needle || it.name.toLowerCase().includes(needle) || shortPath(it.path).toLowerCase().includes(needle))
-      .slice()
-      .sort(order);
+      .filter((it) => !needle || it.name.toLowerCase().includes(needle) || shortPath(it.path).toLowerCase().includes(needle)),
+    effSort('date'));
     const shown = found.filter((it) => !it.hidden);
     const hidden = found.filter((it) => it.hidden);
 
@@ -1285,22 +1274,94 @@ async function openDir(p, { scroll = 0 } = {}) {
 
   const dirs = data.entries.filter((e) => e.dir);
   const files = data.entries.filter((e) => !e.dir);
-
-  if (dirs.length) {
-    doc.appendChild(el('div', 'group-title', 'Папки'));
-    const grid = el('div', 'tiles big');
-    for (const d of dirs) grid.appendChild(folderTile(d));
-    doc.appendChild(grid);
-  }
-  if (files.length) {
-    doc.appendChild(el('div', 'group-title', 'Документы'));
-    const grid = el('div', 'file-tiles');
-    for (const f of files) grid.appendChild(fileTile(f));
-    doc.appendChild(grid);
-  }
-  if (!dirs.length && !files.length) doc.appendChild(el('div', 'empty', 'Папка пуста'));
-
+  const list = el('div');
+  head.appendChild(sortRow(paint, { fallback: 'name' }));
+  doc.appendChild(list);
+  paint();
   restoreScroll(scroll);
+
+  function paint() {
+    list.textContent = '';
+    if (dirs.length) {
+      list.appendChild(el('div', 'group-title', 'Папки'));
+      const grid = el('div', 'tiles big');
+      for (const d of sortEntries(dirs, effSort('name'))) grid.appendChild(folderTile(d));
+      list.appendChild(grid);
+    }
+    if (files.length) {
+      list.appendChild(el('div', 'group-title', 'Документы'));
+      const grid = el('div', 'file-tiles');
+      for (const f of sortEntries(files, effSort('name'))) grid.appendChild(fileTile(f));
+      list.appendChild(grid);
+    }
+    if (!dirs.length && !files.length) list.appendChild(el('div', 'empty', 'Папка пуста'));
+  }
+}
+
+/* ---------- переход по абсолютному пути ---------- */
+// Корень подбирает сервер: избранные проекты → не убранные в подвал → все остальные,
+// из подходящих берётся ближайший по глубине.
+function openGoto() {
+  $('#goto').hidden = false;
+  const input = $('#goto-input');
+  input.value = '';
+  input.focus();
+}
+const closeGoto = () => { $('#goto').hidden = true; };
+
+async function runGoto(raw) {
+  const value = (raw || '').trim();
+  if (!value) return;
+  let res;
+  try { res = await api('/api/goto', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: value }),
+  }); } catch (err) { toast(err.message); return; }     // «Файл вне проекта» приходит сюда
+  closeGoto();
+  if (res.project === state.project) {
+    if (!res.path) { navigate(''); return; }
+    saveScrollNow();
+    navigate(res.path);
+    return;
+  }
+  const hash = res.path ? '#' + res.path : '';
+  location.href = `${location.pathname}?project=${encodeURIComponent(res.project)}${hash}`;
+}
+
+/* ---------- порядок списков: по имени или по дате ---------- */
+// Один переключатель на все списки: меню разделов, экран папки, выбор проекта.
+// В меню есть третий вариант — «Как настроено»: там порядок задан docviewer.json.
+// По имени — это имя файла или папки: оно предсказуемо (в именах обычно дата и тема),
+// у разделов меню своего имени нет, поэтому там берётся подпись.
+const sortLabel = (it) => it.name || it.title || it.label || '';
+const sortName = (a, b) => sortLabel(a).localeCompare(sortLabel(b), 'ru');
+const sortDate = (a, b) => ((b.mtime || b.at || 0) - (a.mtime || a.at || 0)) || sortName(a, b);
+// «Как настроено» есть только в меню разделов; в остальных видах у каждого свой порядок
+// по умолчанию: в папке — по имени, в выборе проекта — по дате.
+const effSort = (fallback) => (state.sort === 'custom' ? fallback : state.sort);
+const sortEntries = (items, key = 'name') => items.slice().sort(key === 'date' ? sortDate : sortName);
+
+// Дата раздела — дата самого свежего файла внутри него.
+const folderDate = (p) => state.files.reduce(
+  (max, f) => ((f.path === p || f.path.startsWith(p + '/')) && f.mtime > max ? f.mtime : max), 0);
+const sortSections = (items) => (state.sort === 'custom' ? items
+  : sortEntries(items.map((it) => ({ ...it, mtime: folderDate(it.path) })), state.sort));
+
+function sortRow(onChange, { custom = '', fallback = 'name' } = {}) {
+  const row = el('div', 'ws-sort sort-row');
+  const options = custom ? [['custom', custom], ['name', 'По имени'], ['date', 'По дате']]
+    : [['name', 'По имени'], ['date', 'По дате']];
+  const active = custom ? state.sort : effSort(fallback);
+  for (const [key, label] of options) {
+    const chip = el('button', 'chip' + (active === key ? ' on' : ''), label);
+    chip.onclick = () => {
+      state.sort = key;
+      localStorage.setItem('dv.sort', key);
+      [...row.children].forEach((c) => c.classList.toggle('on', c === chip));
+      onChange();
+    };
+    row.appendChild(chip);
+  }
+  return row;
 }
 
 // Адрес возвращаем на прежнее место: файл ушёл в стороннее приложение,
@@ -1693,6 +1754,13 @@ function bindUI() {
     };
   });
 
+  $('#goto-btn').onclick = openGoto;
+  $('#goto-input').onkeydown = (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); runGoto(e.target.value); }
+    if (e.key === 'Escape') { e.preventDefault(); closeGoto(); }
+  };
+  $('#goto').onclick = (e) => { if (e.target.id === 'goto') closeGoto(); };
+
   $('#pick-btn').onclick = () => {
     if (location.hash === '#' + PICKER) renderPicker({ refresh: true });
     else { saveScrollNow(); location.hash = PICKER; }
@@ -1718,6 +1786,7 @@ function bindUI() {
   $('#palette').onclick = (e) => { if (e.target.id === 'palette') closePalette(); };
 
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !$('#goto').hidden) { e.preventDefault(); closeGoto(); return; }
     if (e.key === 'Escape' && !$('#zoom').hidden) { e.preventDefault(); closeZoom(); return; }
     if ((e.metaKey || e.ctrlKey) && e.key === 'f' && state.current) { e.preventDefault(); openFind(); return; }
     if ((e.metaKey || e.ctrlKey) && e.key === 'g' && !$('#find').hidden) {

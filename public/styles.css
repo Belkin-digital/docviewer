@@ -98,6 +98,9 @@ button, input { font: inherit; color: inherit; }
   user-select: none; pointer-events: none;
 }
 .markdown .lined > .lined-block { position: relative; margin: 14px 0; }
+.markdown .row-lines { position: absolute; left: -46px; top: 0; width: 34px; height: 0; }
+.markdown .row-lines span { position: absolute; right: 0; font-family: var(--mono); font-size: 10.5px;
+  line-height: 1; color: var(--fg-dim); opacity: .3; user-select: none; white-space: nowrap; }
 .markdown .lined > .lined-block > .table-wrap, .markdown .lined > .lined-block > .code-wrap,
 .markdown .lined > .lined-block > .mermaid, .markdown .lined > .lined-block > pre { margin: 0; }
 

@@ -204,6 +204,49 @@ function lineOutside(node) {
 // marked разбирает текст на верхнеуровневые блоки и хранит у каждого исходный кусок текста —
 // по нему и считаем, с какой строки файла блок начинается. Разметку не трогаем: номер живёт
 // в data-line и рисуется псевдоэлементом в поле слева.
+// В markdown строка таблицы — это ровно одна строка файла, поэтому номера строк считаются
+// прямо по исходному куску: шапка, разделитель, дальше по строке на запись.
+function tagTableRows(table, startLine, raw) {
+  const lines = raw.replace(/\n$/, '').split('\n');
+  let head = 0;
+  while (head < lines.length && !lines[head].trim()) head++;
+  const rows = [];
+  for (let i = head + 2; i < lines.length; i++) if (lines[i].trim()) rows.push(startLine + i);
+  const headRow = table.querySelector('thead tr');
+  if (headRow) headRow.dataset.line = startLine + head;
+  [...table.querySelectorAll('tbody tr')].forEach((tr, i) => {
+    if (rows[i] != null) tr.dataset.line = rows[i];
+  });
+}
+
+// Пункт списка может занимать несколько строк, поэтому идём по исходным кускам пунктов.
+// Вложенные списки нумеруются тем же порядком.
+function tagListItems(list, startLine, token) {
+  const items = [...list.children].filter((n) => n.tagName === 'LI');
+  let line = startLine;
+  (token.items || []).forEach((item, i) => {
+    const li = items[i];
+    if (li) {
+      li.dataset.line = line;
+      const nestedToken = (item.tokens || []).find((t) => t.type === 'list');
+      const nested = li.querySelector(':scope > ul, :scope > ol');
+      if (nested && nestedToken) {
+        const before = item.tokens.slice(0, item.tokens.indexOf(nestedToken)).map((t) => t.raw || '').join('');
+        tagListItems(nested, line + countLines(before), nestedToken);
+      }
+    }
+    line += countLines(item.raw);
+  });
+}
+
+// Обёртка без собственного номера: номера пунктов и строк таблицы расставляются по измерениям.
+function wrapForNumbers(node) {
+  if (node.parentElement.classList.contains('lined-block')) return;
+  const outer = el('div', 'lined-block');
+  node.replaceWith(outer);
+  outer.appendChild(node);
+}
+
 function renderMarkdown(body, firstLine) {
   const holder = el('div', 'lined');
   try {
@@ -219,7 +262,13 @@ function renderMarkdown(body, firstLine) {
       box.innerHTML = marked.parser(one);
       for (const node of [...box.children]) {
         node.dataset.line = start;
+        if (token.type === 'table' && node.tagName === 'TABLE') tagTableRows(node, start, token.raw);
         holder.appendChild(node);
+        if (token.type === 'list' && (node.tagName === 'UL' || node.tagName === 'OL')) {
+          tagListItems(node, start, token);
+          delete node.dataset.line;        // номер первого пункта и есть номер списка
+          wrapForNumbers(node);
+        }
       }
     }
   } catch {
@@ -365,6 +414,7 @@ async function enhance(doc, filePath) {
       }
     }
   }
+  placeMeasuredNumbers();   // схемы меняют высоту — номера ставим по итоговой раскладке
 }
 
 /* ---------- меню разделов ---------- */
@@ -765,18 +815,46 @@ function layoutTable(table) {
   table.style.width = width > avail ? width + 'px' : '100%';
 }
 
+// Строки таблиц и пункты списков разной высоты, а поле с номерами лежит вне прокручиваемой
+// обёртки, поэтому их позиции считаем по факту — после раскладки и при каждом пересчёте.
+function placeMeasuredNumbers() {
+  $('#doc').querySelectorAll('.lined-block').forEach((block) => {
+    const rows = [...block.querySelectorAll('tbody tr[data-line], li[data-line]')];
+    let host = block.querySelector('.row-lines');
+    if (!rows.length) { if (host) host.remove(); return; }
+    if (!host) {
+      host = el('div', 'row-lines');
+      host.setAttribute('aria-hidden', 'true');   // для чтения вслух номера лишние
+      block.appendChild(host);
+    }
+    host.textContent = '';
+    const base = block.getBoundingClientRect().top;
+    for (const row of rows) {
+      const mark = el('span', null, row.dataset.line);
+      const shift = row.tagName === 'TR' ? 7 : 2;   // вровень с первой строкой текста
+      mark.style.top = Math.round(row.getBoundingClientRect().top - base) + shift + 'px';
+      host.appendChild(mark);
+    }
+  });
+}
+
 function relayoutTables() {
+  setTimeout(placeMeasuredNumbers, 0);   // после того, как раскладка и шрифты применятся
   $('#doc').querySelectorAll('table').forEach((table) => {
     try { layoutTable(table); } catch { /* раскладка не критична */ }
   });
 }
 
-// ширина колонки текста меняется (панель, окно) — пересчитываем раскладку таблиц
-let relayoutTimer = null;
+// Ширина колонки текста меняется (панель, окно) — пересчитываем раскладку таблиц и номера строк.
+// Следим именно за областью документа: при сворачивании панели размер окна не меняется.
+let relayoutTimer = null, lastDocWidth = 0;
 new ResizeObserver(() => {
+  const width = $('#doc').clientWidth;
+  if (width === lastDocWidth) return;     // изменилась только высота — раскладка та же
+  lastDocWidth = width;
   clearTimeout(relayoutTimer);
   relayoutTimer = setTimeout(relayoutTables, 120);
-}).observe(document.documentElement);
+}).observe($('#doc'));
 
 /* ---------- HTML-страницы: показываем как страницу ---------- */
 const pageUrl = (p) => (state.assets || '') + '/raw/' + encodeURIComponent(state.project || 'p') + '/' +

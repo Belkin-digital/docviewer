@@ -438,12 +438,12 @@ async function openEditor(app, abs, root) {
 // Папок можно передать несколько: первой корень проекта, второй — та, откуда кликнули.
 async function openClaude(abs, root) {
   const st = await fsp.stat(abs);
-  const dir = st.isDirectory() ? abs : path.dirname(abs);
   const rel = relOf(root, abs);
-  const folders = path.resolve(dir) === path.resolve(root) ? [root] : [root, dir];
-  const params = folders.map((f) => 'folder=' + encodeURIComponent(f));
-  // Параметр file ссылка /code/new не пробрасывает (проверено по коду приложения), поэтому
-  // сам документ называем в поле ввода @-упоминанием — Claude Code понимает такие пути.
+  // Папку передаём ровно одну — корень проекта. От второй (папки документа) сессия начинала
+  // не с корня, а сам документ ссылка всё равно не открывает: параметр file обработчик
+  // /code/new читает, но дальше не пробрасывает. Поэтому документ называем в поле ввода
+  // @-упоминанием от корня — Claude Code понимает такие пути.
+  const params = ['folder=' + encodeURIComponent(root)];
   if (rel && rel !== '.') params.push('q=' + encodeURIComponent('@' + rel + (st.isDirectory() ? '/' : '') + ' '));
   return run('open', ['claude://code/new?' + params.join('&') + '&source=external']);
 }

@@ -170,18 +170,63 @@ function revealInTree(p) {
 marked.setOptions({ gfm: true, breaks: false, headerIds: false, mangle: false });
 
 function splitFrontmatter(text) {
-  if (!text.startsWith('---')) return { meta: null, body: text };
+  if (!text.startsWith('---')) return { meta: null, body: text, offset: 0 };
   const end = text.indexOf('\n---', 3);
-  if (end < 0) return { meta: null, body: text };
+  if (end < 0) return { meta: null, body: text, offset: 0 };
   const raw = text.slice(text.indexOf('\n') + 1, end);
-  const body = text.slice(text.indexOf('\n', end + 1) + 1);
+  const bodyAt = text.indexOf('\n', end + 1) + 1;
+  const body = text.slice(bodyAt);
+  const offset = countLines(text.slice(0, bodyAt));   // столько строк файла ушло на заголовок
   const meta = [];
   for (const line of raw.split('\n')) {
     const m = line.match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
     if (m) meta.push([m[1], m[2]]);
     else if (line.trim() && meta.length) meta[meta.length - 1][1] += ' ' + line.trim();
   }
-  return { meta, body };
+  return { meta, body, offset };
+}
+
+/* ---------- номера строк документа ---------- */
+const countLines = (text) => (text.match(/\n/g) || []).length;
+
+// Блоки с собственной прокруткой (таблицы, код, схемы) срезали бы номер по краю,
+// поэтому у них номер живёт на внешней обёртке.
+function lineOutside(node) {
+  const line = node.dataset.line;
+  if (!line || node.parentElement.classList.contains('lined-block')) return;
+  const outer = el('div', 'lined-block');
+  outer.dataset.line = line;
+  delete node.dataset.line;
+  node.replaceWith(outer);
+  outer.appendChild(node);
+}
+
+// marked разбирает текст на верхнеуровневые блоки и хранит у каждого исходный кусок текста —
+// по нему и считаем, с какой строки файла блок начинается. Разметку не трогаем: номер живёт
+// в data-line и рисуется псевдоэлементом в поле слева.
+function renderMarkdown(body, firstLine) {
+  const holder = el('div', 'lined');
+  try {
+    const tokens = marked.lexer(body);
+    const box = el('div');
+    let line = firstLine;
+    for (const token of tokens) {
+      const start = line;
+      line += countLines(token.raw);
+      if (token.type === 'space') continue;
+      const one = [token];
+      one.links = tokens.links;          // иначе ссылки-сноски потеряются
+      box.innerHTML = marked.parser(one);
+      for (const node of [...box.children]) {
+        node.dataset.line = start;
+        holder.appendChild(node);
+      }
+    }
+  } catch {
+    holder.textContent = '';
+    holder.innerHTML = marked.parse(body);   // разбор по блокам не удался — рисуем как раньше
+  }
+  return holder;
 }
 
 function slugify(s) {
@@ -226,14 +271,16 @@ function addLineNumbers(pre, { always = false } = {}) {
   if (!pre || pre.parentElement.classList.contains('code-wrap')) return;
   const code = pre.querySelector('code') || pre;
   const lines = code.textContent.replace(/\n$/, '').split('\n').length;
-  if (!always && lines < MIN_NUMBERED) return;
+  if (!always && lines < MIN_NUMBERED) { lineOutside(pre); return; }
   const wrap = el('div', 'code-wrap');
+  if (pre.dataset.line) wrap.dataset.line = pre.dataset.line;
   pre.replaceWith(wrap);
   const gutter = el('div', 'code-lines');
   gutter.setAttribute('aria-hidden', 'true');   // для чтения вслух номера лишние
   gutter.textContent = Array.from({ length: lines }, (_, i) => i + 1).join('\n');
   wrap.appendChild(gutter);
   wrap.appendChild(pre);
+  lineOutside(wrap);
 }
 
 async function enhance(doc, filePath) {
@@ -284,8 +331,10 @@ async function enhance(doc, filePath) {
   doc.querySelectorAll('table').forEach((table) => {
     if (!table.parentElement.classList.contains('table-wrap')) {
       const wrap = el('div', 'table-wrap');
+      if (table.dataset.line) wrap.dataset.line = table.dataset.line;
       table.replaceWith(wrap);
       wrap.appendChild(table);
+      lineOutside(wrap);
     }
   });
   relayoutTables();
@@ -303,7 +352,9 @@ async function enhance(doc, filePath) {
       const pre = mermaids[i].parentElement;
       const code = mermaids[i].textContent;
       const box = el('div', 'mermaid');
+      if (pre.dataset.line) box.dataset.line = pre.dataset.line;
       pre.replaceWith(box);
+      lineOutside(box);
       try {
         const { svg } = await mermaid.render('mmd-' + Date.now() + '-' + i, code);
         box.innerHTML = svg;
@@ -1050,10 +1101,9 @@ async function openFile(p, { anchor = null, keepScroll = false, scroll = 0 } = {
     }
     $('#toc').textContent = '';
   } else if (ext === '.md' || ext === '.mdc') {
-    const { meta, body } = splitFrontmatter(data.content);
+    const { meta, body, offset } = splitFrontmatter(data.content);
     if (meta && meta.length) doc.appendChild(renderFrontmatter(meta));
-    const holder = el('div');
-    holder.innerHTML = marked.parse(body);
+    const holder = renderMarkdown(body, offset + 1);
     doc.appendChild(holder);
     await enhance(doc, p);
   } else {

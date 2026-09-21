@@ -88,6 +88,19 @@ button, input { font: inherit; color: inherit; }
 .markdown pre { background: var(--bg-soft); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow: auto; line-height: 1.55; }
 .markdown pre code { background: none; padding: 0; font-size: 12.5px; }
 
+/* номера строк документа: тонкое поле слева, текст сдвинут на его ширину */
+.markdown .lined { padding-left: 46px; }
+.markdown .lined > [data-line] { position: relative; }
+.markdown .lined > [data-line]::before {
+  content: attr(data-line);
+  position: absolute; left: -46px; width: 34px; text-align: right;
+  font-family: var(--mono); font-size: 10.5px; color: var(--fg-dim); opacity: .3;
+  user-select: none; pointer-events: none;
+}
+.markdown .lined > .lined-block { position: relative; margin: 14px 0; }
+.markdown .lined > .lined-block > .table-wrap, .markdown .lined > .lined-block > .code-wrap,
+.markdown .lined > .lined-block > .mermaid, .markdown .lined > .lined-block > pre { margin: 0; }
+
 /* номера строк: отдельная колонка слева от кода, тем же кеглем и межстрочным интервалом */
 .markdown .code-wrap { display: flex; margin: 14px 0; border: 1px solid var(--line); border-radius: 8px;
   background: var(--bg-soft); overflow: hidden; }

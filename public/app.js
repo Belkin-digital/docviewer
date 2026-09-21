@@ -19,7 +19,7 @@ const state = {
   tree: [], files: [], fileSet: new Set(), dirSet: new Set(), dirMap: new Map(), current: null,
   expanded: LS.open, filter: '', tab: 'tree', lastQuery: '',
   config: null, sections: [], hidden: [], favorites: [], projects: [], project: PROJECT, root: '',
-  home: '', meta: null, picking: false,
+  home: '', meta: null, picking: false, wsItems: null, wsQuery: '', wsSort: localStorage.getItem('dv.wssort') || 'date',
   editing: false, showSource: false, assets: '',
 };
 
@@ -622,6 +622,16 @@ async function openProjectFolder(item) {
   location.href = `${location.pathname}?project=${encodeURIComponent(res.project)}`;
 }
 
+// Дата берётся из источников: последняя сессия Claude Code, последнее окно Cursor или VS Code и т.д.
+function whenText(at) {
+  if (!at) return '';
+  const days = Math.floor((Date.now() - at) / 86400000);
+  if (days <= 0) return 'сегодня';
+  if (days === 1) return 'вчера';
+  if (days < 7) return days + ' ' + plural(days, ['день', 'дня', 'дней']) + ' назад';
+  return new Date(at).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
 function wsTile(item, redraw) {
   const tile = el('button', 'tile ws-tile');
   const top = el('div', 'tile-top');
@@ -637,7 +647,10 @@ function wsTile(item, redraw) {
   top.appendChild(apps);
   top.appendChild(el('span', 'tile-title', cap(item.name)));
   tile.appendChild(top);
-  tile.appendChild(el('div', 'tile-meta', shortPath(item.path)));
+  const meta = el('div', 'tile-meta', shortPath(item.path));
+  const when = whenText(item.at);
+  if (when) meta.appendChild(el('span', 'ws-when', when));
+  tile.appendChild(meta);
 
   const star = el('button', 'ws-star' + (item.fav ? ' on' : ''), item.fav ? '★' : '☆');
   star.title = item.fav ? 'Убрать из списка проектов' : 'Добавить в список проектов';
@@ -667,7 +680,7 @@ function wsTile(item, redraw) {
   return tile;
 }
 
-async function renderPicker() {
+async function renderPicker({ refresh = false } = {}) {
   closeFind();
   state.current = null;
   localStorage.removeItem(key('last'));
@@ -693,42 +706,92 @@ async function renderPicker() {
   add.title = 'Выбрать папку, которой ещё нет ни в одном проекте';
   add.onclick = async () => {
     const res = await api('/api/pickfolder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    if (res.path) { toast('Добавлено: ' + shortPath(res.path)); renderPicker(); }
+    if (res.path) { toast('Добавлено: ' + shortPath(res.path)); renderPicker({ refresh: true }); }
   };
   row.appendChild(add);
   head.appendChild(row);
+
+  const tools = el('div', 'ws-tools');
+  const search = document.createElement('input');
+  search.type = 'search';
+  search.className = 'ws-search';
+  search.placeholder = 'Поиск по имени или пути';
+  search.value = state.wsQuery;
+  search.autocomplete = 'off';
+  search.spellcheck = false;
+  search.oninput = () => { state.wsQuery = search.value; paint(); };   // список перерисовываем, поле не трогаем
+  search.onkeydown = (e) => {
+    if (e.key !== 'Enter') return;
+    const first = list.querySelector('.ws-tile');   // Enter открывает первую найденную папку
+    if (first) first.click();
+  };
+  tools.appendChild(search);
+  const sorts = el('div', 'ws-sort');
+  for (const [key, label] of [['date', 'По дате'], ['name', 'По алфавиту']]) {
+    const btn = el('button', 'chip' + (state.wsSort === key ? ' on' : ''), label);
+    btn.onclick = () => {
+      state.wsSort = key;
+      localStorage.setItem('dv.wssort', key);
+      [...sorts.children].forEach((c) => c.classList.toggle('on', c === btn));
+      paint();
+    };
+    sorts.appendChild(btn);
+  }
+  tools.appendChild(sorts);
+  head.appendChild(tools);
+
   head.appendChild(el('p', 'home-sub', 'Папки, с которыми вы работали в Claude Code, Cursor, VS Code и ChatGPT. ' +
     'Звёздочка добавляет папку в список проектов наверху, «Настроить» убирает лишние в подвал.'));
   home.appendChild(head);
+  const list = el('div', 'ws-list');
+  home.appendChild(list);
   doc.appendChild(home);
 
-  let data;
-  try { data = await api('/api/workspaces'); }
-  catch (err) { home.appendChild(el('div', 'empty', 'Не удалось собрать список папок: ' + err.message)); return; }
-
-  const items = data.items || [];
-  const shown = items.filter((it) => !it.hidden);
-  const hidden = items.filter((it) => it.hidden);
-  const grid = el('div', 'tiles');   // папок много, поэтому плашки компактнее, чем в меню разделов
-  for (const item of shown) grid.appendChild(wsTile(item, renderPicker));
-  home.appendChild(grid);
-  if (!shown.length) home.appendChild(el('div', 'empty', 'Все папки убраны в подвал'));
-
-  if (hidden.length) {
-    home.appendChild(el('div', 'group-title', 'Остальные папки'));
-    const chips = el('div', 'chips');
-    for (const item of hidden) {
-      const chip = el('button', 'chip', cap(item.name));
-      chip.title = shortPath(item.path);
-      chip.onclick = async () => {
-        if (state.picking) { await ws('show', item.path); renderPicker(); return; }
-        openProjectFolder(item);
-      };
-      chips.appendChild(chip);
+  if (refresh || !state.wsItems) {
+    try { state.wsItems = (await api('/api/workspaces')).items || []; }
+    catch (err) {
+      list.appendChild(el('div', 'empty', 'Не удалось собрать список папок: ' + err.message));
+      return;
     }
-    home.appendChild(chips);
   }
+  paint();
+  search.focus();
   restoreScroll(0);
+
+  function reload() { renderPicker({ refresh: true }); }
+
+  function paint() {
+    list.textContent = '';
+    const needle = state.wsQuery.trim().toLowerCase();
+    const byName = (a, b) => a.name.localeCompare(b.name, 'ru');
+    const order = state.wsSort === 'name' ? byName : (a, b) => (b.at - a.at) || byName(a, b);
+    const found = (state.wsItems || [])
+      .filter((it) => !needle || it.name.toLowerCase().includes(needle) || shortPath(it.path).toLowerCase().includes(needle))
+      .slice()
+      .sort(order);
+    const shown = found.filter((it) => !it.hidden);
+    const hidden = found.filter((it) => it.hidden);
+
+    const grid = el('div', 'tiles');
+    for (const item of shown) grid.appendChild(wsTile(item, reload));
+    list.appendChild(grid);
+    if (!shown.length) list.appendChild(el('div', 'empty', needle ? 'Ничего не нашлось' : 'Все папки убраны в подвал'));
+
+    if (hidden.length) {
+      list.appendChild(el('div', 'group-title', 'Остальные папки'));
+      const chips = el('div', 'chips');
+      for (const item of hidden) {
+        const chip = el('button', 'chip', cap(item.name));
+        chip.title = shortPath(item.path);
+        chip.onclick = async () => {
+          if (state.picking) { await ws('show', item.path); reload(); return; }
+          openProjectFolder(item);
+        };
+        chips.appendChild(chip);
+      }
+      list.appendChild(chips);
+    }
+  }
 }
 
 /* ---------- схемы: прокрутка, масштаб, просмотр во весь экран ---------- */
@@ -1612,7 +1675,7 @@ function bindUI() {
   });
 
   $('#pick-btn').onclick = () => {
-    if (location.hash === '#' + PICKER) renderPicker();
+    if (location.hash === '#' + PICKER) renderPicker({ refresh: true });
     else { saveScrollNow(); location.hash = PICKER; }
   };
   $('#home-btn').onclick = () => navigate('');
@@ -1673,7 +1736,7 @@ function bindUI() {
   window.addEventListener('hashchange', () => {
     const [p, anchor] = decodeURIComponent(location.hash.slice(1)).split('#');
     const scroll = savedScroll();   // есть только у записи, с которой мы уже уходили
-    if (p === PICKER) renderPicker();
+    if (p === PICKER) renderPicker({ refresh: true });
     else if (p) openPath(p, { anchor, scroll });
     else renderHome({ scroll });
   });
@@ -1699,7 +1762,7 @@ async function boot() {
   connectEvents();
 
   const fromHash = decodeURIComponent(location.hash.slice(1)).split('#');
-  if (fromHash[0] === PICKER) { renderPicker(); return; }
+  if (fromHash[0] === PICKER) { renderPicker({ refresh: true }); return; }
   const start = fromHash[0] && (state.fileSet.has(fromHash[0]) || state.dirSet.has(fromHash[0])) && fromHash[0];
   if (start) { await openPath(start, { anchor: fromHash[1] }); revealInTree(start); }
   else renderHome();

@@ -184,6 +184,14 @@ button, input { font: inherit; color: inherit; }
   background: var(--bg); color: var(--fg-dim); cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 6px; }
 .ws-del:hover { border-color: #d14; color: #d14; }
 .home.editing .ws-tile { border-style: dashed; }
+.ws-tools { display: flex; align-items: center; gap: 10px; margin: 14px 0 6px; flex-wrap: wrap; }
+.ws-search { flex: 1; min-width: 220px; max-width: 420px; padding: 6px 12px; border: 1px solid var(--line);
+  border-radius: 999px; background: var(--bg); color: var(--fg); outline: none; font-size: 13px; }
+.ws-search:focus { border-color: var(--accent); }
+.ws-sort { display: flex; gap: 6px; }
+.ws-sort .chip { cursor: pointer; }
+.ws-sort .chip.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.ws-when { margin-left: 8px; color: var(--fg-dim); opacity: .75; }
 
 #home-btn { flex: none; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); cursor: pointer; }
 #home-btn:hover { border-color: var(--accent); color: var(--accent); }

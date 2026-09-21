@@ -577,10 +577,13 @@ async function collectWorkspaces() {
     return ok;
   };
   const pending = [];
+  // Служебные копии не проекты: временные папки Claude и рабочие копии агентов
+  const JUNK = ['/Library/Application Support/Claude/scratch-workspaces/', '/.claude/worktrees/', '/.git/'];
   const add = (raw, source, at) => {
     if (!raw || typeof raw !== 'string') return;
     const abs = path.resolve(raw.replace(/\/$/, ''));
     if (abs === '/' || abs === HOME) return;               // корень диска и домашняя папка — не проекты
+    if (JUNK.some((junk) => abs.includes(junk))) return;
     pending.push({ abs, source, at: at || 0 });
   };
   await Promise.all([

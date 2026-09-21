@@ -85,8 +85,16 @@ button, input { font: inherit; color: inherit; }
 .markdown a:hover { text-decoration: underline; }
 .markdown a.missing { color: var(--warn); text-decoration: line-through dotted; }
 .markdown code { font-family: var(--mono); font-size: 12.5px; background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; }
-.markdown pre { background: var(--bg-soft); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow: auto; }
+.markdown pre { background: var(--bg-soft); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow: auto; line-height: 1.55; }
 .markdown pre code { background: none; padding: 0; font-size: 12.5px; }
+
+/* номера строк: отдельная колонка слева от кода, тем же кеглем и межстрочным интервалом */
+.markdown .code-wrap { display: flex; margin: 14px 0; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--bg-soft); overflow: hidden; }
+.markdown .code-wrap > pre { flex: 1; min-width: 0; margin: 0; border: none; border-radius: 0; }
+.markdown .code-lines { flex: none; padding: 12px 8px 12px 12px; border-right: 1px solid var(--line);
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.55; white-space: pre; text-align: right;
+  color: var(--fg-dim); opacity: .45; user-select: none; }
 .markdown blockquote { margin: 12px 0; padding: 6px 14px; border-left: 3px solid var(--accent); background: var(--bg-soft); color: var(--fg-dim); border-radius: 0 6px 6px 0; }
 .markdown table { border-collapse: collapse; width: 100%; margin: 0; font-size: 13px; }
 .markdown .table-wrap { margin: 14px 0; overflow-x: auto; max-width: 100%; }

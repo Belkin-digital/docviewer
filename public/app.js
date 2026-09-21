@@ -219,6 +219,23 @@ function initMermaid() {
   mermaidReady = true;
 }
 
+// Номера строк отдельной колонкой слева: разметку подсветки не трогаем, поэтому ничего не рвётся,
+// а при горизонтальной прокрутке кода номера остаются на месте. Короткие вставки не нумеруем.
+const MIN_NUMBERED = 3;
+function addLineNumbers(pre, { always = false } = {}) {
+  if (!pre || pre.parentElement.classList.contains('code-wrap')) return;
+  const code = pre.querySelector('code') || pre;
+  const lines = code.textContent.replace(/\n$/, '').split('\n').length;
+  if (!always && lines < MIN_NUMBERED) return;
+  const wrap = el('div', 'code-wrap');
+  pre.replaceWith(wrap);
+  const gutter = el('div', 'code-lines');
+  gutter.setAttribute('aria-hidden', 'true');   // для чтения вслух номера лишние
+  gutter.textContent = Array.from({ length: lines }, (_, i) => i + 1).join('\n');
+  wrap.appendChild(gutter);
+  wrap.appendChild(pre);
+}
+
 async function enhance(doc, filePath) {
   const base = dirname(filePath);
 
@@ -278,6 +295,7 @@ async function enhance(doc, filePath) {
   const mermaids = blocks.filter((c) => c.className.includes('language-mermaid'));
   blocks.filter((c) => !c.className.includes('language-mermaid')).forEach((c) => {
     try { hljs.highlightElement(c); } catch { /* язык не распознан */ }
+    addLineNumbers(c.parentElement);
   });
   if (mermaids.length) {
     initMermaid();
@@ -1044,6 +1062,7 @@ async function openFile(p, { anchor = null, keepScroll = false, scroll = 0 } = {
     const code = el('code', 'language-' + ext.slice(1), data.content);
     pre.appendChild(code); doc.appendChild(pre);
     try { hljs.highlightElement(code); } catch { /* язык не распознан */ }
+    addLineNumbers(pre, { always: true });   // файл целиком — номера нужны всегда
     $('#toc').textContent = '';
   }
 

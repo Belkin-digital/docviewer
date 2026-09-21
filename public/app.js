@@ -20,6 +20,7 @@ const state = {
   expanded: LS.open, filter: '', tab: 'tree', lastQuery: '',
   config: null, sections: [], hidden: [], favorites: [], projects: [], project: PROJECT, root: '',
   home: '', meta: null, picking: false, wsItems: null, wsQuery: '', wsSort: localStorage.getItem('dv.wssort') || 'date',
+  wsFav: localStorage.getItem('dv.wsfav') === '1',
   editing: false, showSource: false, assets: '',
 };
 
@@ -602,7 +603,7 @@ function renderHome({ scroll = 0 } = {}) {
 // Папки берём из того, где вы уже работали: проекты Claude Code, окна Cursor и VS Code,
 // сессии Codex (ChatGPT). Звёздочка добавляет папку в список проектов наверху.
 const PICKER = '!projects';
-const SOURCE_NAMES = { claude: 'Claude Code', cursor: 'Cursor', vscode: 'VS Code', chatgpt: 'ChatGPT · Codex' };
+const SOURCE_NAMES = { claude: 'Claude Code', cursor: 'Cursor', vscode: 'VS Code' };
 const shortPath = (p) => (state.home && p.startsWith(state.home) ? '~' + p.slice(state.home.length) : p);
 
 const ws = (action, path, extra = {}) => api('/api/workspaces', {
@@ -680,7 +681,10 @@ function wsTile(item, redraw) {
   return tile;
 }
 
-async function renderPicker({ refresh = false } = {}) {
+async function renderPicker({ refresh = false, keepScroll = false } = {}) {
+  const scroller = $('#scroller');
+  const wasScroll = scroller.scrollTop;
+  const hadFocus = document.activeElement && document.activeElement.classList.contains('ws-search');
   closeFind();
   state.current = null;
   localStorage.removeItem(key('last'));
@@ -699,14 +703,14 @@ async function renderPicker({ refresh = false } = {}) {
   row.appendChild(el('h1', null, 'Проекты'));
 
   const setup = el('button', 'setup-btn' + (state.picking ? ' active' : ''), state.picking ? 'Готово' : 'Настроить');
-  setup.onclick = () => { state.picking = !state.picking; renderPicker(); };
+  setup.onclick = () => { state.picking = !state.picking; renderPicker({ keepScroll: true }); };
   row.appendChild(setup);
 
   const add = el('button', 'setup-btn', '＋ Добавить папку');
   add.title = 'Выбрать папку, которой ещё нет ни в одном проекте';
   add.onclick = async () => {
     const res = await api('/api/pickfolder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    if (res.path) { toast('Добавлено: ' + shortPath(res.path)); renderPicker({ refresh: true }); }
+    if (res.path) { toast('Добавлено: ' + shortPath(res.path)); renderPicker({ refresh: true, keepScroll: true }); }
   };
   row.appendChild(add);
   head.appendChild(row);
@@ -727,6 +731,15 @@ async function renderPicker({ refresh = false } = {}) {
   };
   tools.appendChild(search);
   const sorts = el('div', 'ws-sort');
+  const onlyFav = el('button', 'chip' + (state.wsFav ? ' on' : ''), '★ Избранные');
+  onlyFav.title = 'Показывать только папки из списка проектов';
+  onlyFav.onclick = () => {
+    state.wsFav = !state.wsFav;
+    localStorage.setItem('dv.wsfav', state.wsFav ? '1' : '0');
+    onlyFav.classList.toggle('on', state.wsFav);
+    paint();
+  };
+  sorts.appendChild(onlyFav);
   for (const [key, label] of [['date', 'По дате'], ['name', 'По алфавиту']]) {
     const btn = el('button', 'chip' + (state.wsSort === key ? ' on' : ''), label);
     btn.onclick = () => {
@@ -740,7 +753,7 @@ async function renderPicker({ refresh = false } = {}) {
   tools.appendChild(sorts);
   head.appendChild(tools);
 
-  head.appendChild(el('p', 'home-sub', 'Папки, с которыми вы работали в Claude Code, Cursor, VS Code и ChatGPT. ' +
+  head.appendChild(el('p', 'home-sub', 'Папки, с которыми вы работали в Claude Code, Cursor и VS Code. ' +
     'Звёздочка добавляет папку в список проектов наверху, «Настроить» убирает лишние в подвал.'));
   home.appendChild(head);
   const list = el('div', 'ws-list');
@@ -755,10 +768,12 @@ async function renderPicker({ refresh = false } = {}) {
     }
   }
   paint();
-  search.focus();
-  restoreScroll(0);
+  // при перерисовке (настройка, звёздочка) остаёмся на месте, при входе — сверху
+  if (keepScroll) scroller.scrollTop = wasScroll;
+  else restoreScroll(0);
+  if (!keepScroll || hadFocus) search.focus({ preventScroll: true });
 
-  function reload() { renderPicker({ refresh: true }); }
+  function reload() { renderPicker({ refresh: true, keepScroll: true }); }
 
   function paint() {
     list.textContent = '';
@@ -766,6 +781,7 @@ async function renderPicker({ refresh = false } = {}) {
     const byName = (a, b) => a.name.localeCompare(b.name, 'ru');
     const order = state.wsSort === 'name' ? byName : (a, b) => (b.at - a.at) || byName(a, b);
     const found = (state.wsItems || [])
+      .filter((it) => !state.wsFav || it.fav)
       .filter((it) => !needle || it.name.toLowerCase().includes(needle) || shortPath(it.path).toLowerCase().includes(needle))
       .slice()
       .sort(order);
@@ -775,7 +791,10 @@ async function renderPicker({ refresh = false } = {}) {
     const grid = el('div', 'tiles');
     for (const item of shown) grid.appendChild(wsTile(item, reload));
     list.appendChild(grid);
-    if (!shown.length) list.appendChild(el('div', 'empty', needle ? 'Ничего не нашлось' : 'Все папки убраны в подвал'));
+    if (!shown.length) {
+      const why = needle ? 'Ничего не нашлось' : (state.wsFav ? 'В избранном пока пусто' : 'Все папки убраны в подвал');
+      list.appendChild(el('div', 'empty', why));
+    }
 
     if (hidden.length) {
       list.appendChild(el('div', 'group-title', 'Остальные папки'));

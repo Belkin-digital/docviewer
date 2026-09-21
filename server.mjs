@@ -515,16 +515,6 @@ async function readWorkspacesFile() {
 }
 const writeWorkspacesFile = (data) => fsp.writeFile(WORKSPACES_FILE, JSON.stringify(data, null, 2) + '\n', 'utf8');
 
-async function headOf(file, bytes = 4096) {
-  const fh = await fsp.open(file, 'r').catch(() => null);
-  if (!fh) return '';
-  try {
-    const buf = Buffer.alloc(bytes);
-    const { bytesRead } = await fh.read(buf, 0, bytes, 0);
-    return buf.slice(0, bytesRead).toString('utf8');
-  } finally { await fh.close(); }
-}
-
 async function scanClaude(add) {
   const cfg = await readJson(path.join(HOME, '.claude.json'));
   for (const p of Object.keys((cfg && cfg.projects) || {})) {
@@ -541,27 +531,6 @@ async function scanEditor(appDir, source, add) {
     if (!uri || !uri.startsWith('file://')) continue;
     const st = await fsp.stat(path.join(base, dir)).catch(() => null);
     add(decodeURIComponent(uri.slice('file://'.length)), source, st ? st.mtimeMs : 0);
-  }
-}
-
-async function scanCodex(add) {
-  const base = path.join(HOME, '.codex', 'sessions');
-  const files = [];
-  const walk = async (dir, depth) => {
-    if (depth > 4 || files.length > 600) return;
-    for (const item of await fsp.readdir(dir, { withFileTypes: true }).catch(() => [])) {
-      const abs = path.join(dir, item.name);
-      if (item.isDirectory()) await walk(abs, depth + 1);
-      else if (item.name.endsWith('.jsonl')) files.push(abs);
-    }
-  };
-  await walk(base, 0);
-  for (const file of files) {
-    const m = (await headOf(file)).match(/"cwd":"((?:[^"\\]|\\.)*)"/);
-    if (!m) continue;
-    let cwd; try { cwd = JSON.parse('"' + m[1] + '"'); } catch { continue; }
-    const st = await fsp.stat(file).catch(() => null);
-    add(cwd, 'chatgpt', st ? st.mtimeMs : 0);
   }
 }
 
@@ -586,11 +555,11 @@ async function collectWorkspaces() {
     if (JUNK.some((junk) => abs.includes(junk))) return;
     pending.push({ abs, source, at: at || 0 });
   };
+  // ChatGPT (Codex) пока не берём: он отдаёт рабочую папку каждого чата, а не проекты
   await Promise.all([
     scanClaude(add),
     scanEditor('Cursor', 'cursor', add),
     scanEditor('Code', 'vscode', add),
-    scanCodex(add),
   ]);
   for (const { abs, source, at } of pending) {
     if (!(await isDir(abs))) continue;                     // папку могли удалить или переименовать
@@ -645,7 +614,6 @@ const APP_BUNDLES = {
   cursor: '/Applications/Cursor.app',
   obsidian: '/Applications/Obsidian.app',
   claude: '/Applications/Claude.app',
-  chatgpt: '/Applications/ChatGPT.app',
   reveal: '/System/Library/CoreServices/Finder.app',
 };
 const ICON_DIR = path.join(os.tmpdir(), 'docviewer-icons');

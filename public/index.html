@@ -36,7 +36,12 @@
 
   <main id="main">
     <header id="toolbar">
-      <button id="pick-btn" title="Все папки, с которыми вы работали">Проекты</button>
+      <button id="pick-btn" class="ico" title="Проекты: все папки, с которыми вы работали" aria-label="Проекты">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
+          <rect x="1" y="1" width="6" height="6" rx="1.6"/><rect x="9" y="1" width="6" height="6" rx="1.6"/>
+          <rect x="1" y="9" width="6" height="6" rx="1.6"/><rect x="9" y="9" width="6" height="6" rx="1.6"/>
+        </svg>
+      </button>
       <div id="projects" class="projects" hidden></div>
       <button id="show-side" title="Показать панель (⌘B)">›</button>
       <button id="home-btn" title="Меню разделов">Меню</button>

@@ -167,8 +167,9 @@ button, input { font: inherit; color: inherit; }
 .home.editing .chip.add:hover { border-color: var(--ok); color: var(--ok); }
 
 /* --- экран выбора проекта --- */
-#pick-btn { flex: none; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px;
-  background: var(--bg); color: inherit; cursor: pointer; }
+#pick-btn { flex: none; width: 30px; height: 28px; padding: 0; display: inline-grid; place-items: center;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg-dim); cursor: pointer; }
+#pick-btn svg { fill: currentColor; display: block; }
 #pick-btn:hover { border-color: var(--accent); color: var(--accent); }
 .tile.ws-tile { min-height: 0; gap: 4px; padding: 12px 44px 12px 14px; }
 .tile.ws-tile .tile-title { font-size: 15px; }

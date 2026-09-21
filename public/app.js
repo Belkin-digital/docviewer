@@ -1301,21 +1301,24 @@ async function openDir(p, { scroll = 0 } = {}) {
 /* ---------- переход по абсолютному пути ---------- */
 // Корень подбирает сервер: избранные проекты → не убранные в подвал → все остальные,
 // из подходящих берётся ближайший по глубине.
-function openGoto() {
+const GOTO_HINT = 'Проект подберётся сам: сначала избранные, затем остальные; из нескольких подходящих берётся ближайший';
+
+function openGoto(prefill = '', note = '') {
   $('#goto').hidden = false;
+  $('#goto-hint').textContent = note || GOTO_HINT;
+  $('#goto-hint').classList.toggle('warn', !!note);
   const input = $('#goto-input');
-  input.value = '';
+  input.value = prefill;
   input.focus();
+  input.select();
 }
 const closeGoto = () => { $('#goto').hidden = true; };
 
-async function runGoto(raw) {
-  const value = (raw || '').trim();
-  if (!value) return;
-  let res;
-  try { res = await api('/api/goto', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path: value }),
-  }); } catch (err) { toast(err.message); return; }     // «Файл вне проекта» приходит сюда
+const askGoto = (path) => api('/api/goto', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path }),
+});
+
+function applyGoto(res) {
   closeGoto();
   if (res.project === state.project) {
     if (!res.path) { navigate(''); return; }
@@ -1325,6 +1328,32 @@ async function runGoto(raw) {
   }
   const hash = res.path ? '#' + res.path : '';
   location.href = `${location.pathname}?project=${encodeURIComponent(res.project)}${hash}`;
+}
+
+async function runGoto(raw) {
+  const value = (raw || '').trim();
+  if (!value) return;
+  try { applyGoto(await askGoto(value)); }
+  catch (err) { openGoto(value, err.message); }     // «Файл вне проекта» и прочее показываем в окне
+}
+
+// Клик по кнопке сначала смотрит в буфер обмена: если там путь к файлу внутри проекта —
+// переходим сразу. Ввод предлагаем, только когда взять из буфера нечего.
+const looksLikePath = (s) => /^(~\/|\/|file:\/\/)/.test(s);
+
+async function gotoFromClipboard() {
+  let text = '';
+  try { text = (await navigator.clipboard.readText()) || ''; } catch { /* буфер недоступен — спросим путь */ }
+  const first = text.split('\n')[0].trim().replace(/^['"]|['"]$/g, '');
+  if (!first || first.length > 400 || !looksLikePath(first)) {
+    openGoto(looksLikePath(first) ? first : '');
+    return;
+  }
+  let res;
+  try { res = await askGoto(first); }
+  catch (err) { openGoto(first, err.message); return; }
+  toast('Из буфера: ' + (res.path || basename(res.root)));
+  applyGoto(res);
 }
 
 /* ---------- порядок списков: по имени или по дате ---------- */
@@ -1754,7 +1783,7 @@ function bindUI() {
     };
   });
 
-  $('#goto-btn').onclick = openGoto;
+  $('#goto-btn').onclick = gotoFromClipboard;
   $('#goto-input').onkeydown = (e) => {
     if (e.key === 'Enter') { e.preventDefault(); runGoto(e.target.value); }
     if (e.key === 'Escape') { e.preventDefault(); closeGoto(); }

@@ -42,7 +42,7 @@
           <rect x="1" y="9" width="6" height="6" rx="1.6"/><rect x="9" y="9" width="6" height="6" rx="1.6"/>
         </svg>
       </button>
-      <button id="goto-btn" class="ico" title="Перейти к файлу по абсолютному пути" aria-label="Перейти по пути">
+      <button id="goto-btn" class="ico" title="Перейти к файлу: путь берётся из буфера обмена, иначе спросим" aria-label="Перейти по пути">
         <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
           <path d="M2 7h7.2L6.6 4.4 7.9 3l5 5-5 5-1.3-1.4L9.2 9H2z"/><rect x="13.4" y="2.2" width="1.6" height="11.6" rx=".8"/>
         </svg>
@@ -85,7 +85,7 @@
 <div id="goto" hidden>
   <div class="palette-box">
     <input id="goto-input" type="text" placeholder="Абсолютный путь: /Users/… или ~/…" autocomplete="off" spellcheck="false">
-    <div class="goto-hint">Проект подберётся сам: сначала избранные, затем остальные; из нескольких подходящих берётся ближайший</div>
+    <div class="goto-hint" id="goto-hint">Проект подберётся сам: сначала избранные, затем остальные; из нескольких подходящих берётся ближайший</div>
   </div>
 </div>
 <div id="toast" hidden></div>

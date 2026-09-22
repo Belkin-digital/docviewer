@@ -489,8 +489,14 @@ async function openClaude(abs, root) {
   // не с корня, а сам документ ссылка всё равно не открывает: параметр file обработчик
   // /code/new читает, но дальше не пробрасывает. Поэтому документ называем в поле ввода
   // @-упоминанием от корня — Claude Code понимает такие пути.
-  const params = ['folder=' + encodeURIComponent(root)];
-  if (rel && rel !== '.') params.push('q=' + encodeURIComponent('@' + rel + (st.isDirectory() ? '/' : '') + ' '));
+  //
+  // Текст для поля ввода передаём всегда, даже когда кликнули по самому корню: приложение
+  // помечает папку из внешней ссылки как «чужую» (src=external) и без текста только предлагает
+  // её плиткой — сессия при этом стартует без корневой папки. С непустым текстом оно идёт
+  // другим путём: спрашивает доверие к папке и делает её корнем сессии. Когда называть нечего,
+  // шлём один пробел — в поле ввода он незаметен.
+  const mention = rel && rel !== '.' ? '@' + rel + (st.isDirectory() ? '/' : '') + ' ' : ' ';
+  const params = ['folder=' + encodeURIComponent(root), 'q=' + encodeURIComponent(mention)];
   return run('open', ['claude://code/new?' + params.join('&') + '&source=external']);
 }
 

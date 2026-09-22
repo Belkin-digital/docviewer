@@ -500,8 +500,22 @@ async function openClaude(abs, root) {
   return run('open', ['claude://code/new?' + params.join('&') + '&source=external']);
 }
 
+// Новый чат Codex в приложении ChatGPT: у него своя ссылка codex://threads/new.
+// Параметр path обработчик принимает только папкой (файл он молча отбрасывает и открывает
+// чат без проекта), поэтому шлём корень репозитория, а документ называем в поле ввода
+// @-упоминанием — как и у Claude. Доверие к папке Codex не спрашивает: папка сразу
+// становится проектом чата.
+async function openCodex(abs, root) {
+  const st = await fsp.stat(abs);
+  const rel = relOf(root, abs);
+  const params = ['path=' + encodeURIComponent(root)];
+  if (rel && rel !== '.') params.push('prompt=' + encodeURIComponent('@' + rel + (st.isDirectory() ? '/' : '') + ' '));
+  return run('open', ['codex://threads/new?' + params.join('&')]);
+}
+
 function openNative(app, abs, root) {
   if (app === 'claude') return openClaude(abs, root);
+  if (app === 'codex') return openCodex(abs, root);
   if (EDITOR_CLIS[app]) return openEditor(app, abs, root);
   const args = APPS[app];
   if (!args) throw new Error('неизвестное приложение: ' + app);
@@ -545,6 +559,36 @@ async function scanEditor(appDir, source, add) {
   }
 }
 
+// Проекты приложения Codex лежат в его базе `~/.codex/state_<N>.sqlite`: таблицы
+// `projects` и `project_roots`. Берём именно их, а не рабочие папки разговоров: чат без
+// проекта Codex заводит в отдельной папке `~/Documents/Codex/<дата>/<название чата>`,
+// и раньше список заполняли как раз они — по папке на чат.
+// Дата проекта в базе одна на всех (её проставила миграция), поэтому берём дату последнего
+// разговора в этой папке: `threads.updated_at`, секунды.
+async function scanCodex(add) {
+  let sqlite;
+  try { sqlite = await import('node:sqlite'); } catch { return; }   // сборка Node без node:sqlite
+  const dir = path.join(HOME, '.codex');
+  const files = (await fsp.readdir(dir).catch(() => [])).filter((f) => /^state_\d+\.sqlite$/.test(f));
+  if (!files.length) return;
+  // имя файла версионное: state_6 новее state_5
+  files.sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
+  let db = null;
+  try {
+    db = new sqlite.DatabaseSync(path.join(dir, files[files.length - 1]), { readOnly: true });
+    const lastUse = new Map();
+    for (const row of db.prepare('SELECT cwd, MAX(updated_at) AS at FROM threads GROUP BY cwd').all()) {
+      lastUse.set(row.cwd, Number(row.at) * 1000);
+    }
+    const sql = 'SELECT r.path AS path, p.updated_at_ms AS at FROM project_roots r JOIN projects p ON p.id = r.project_id';
+    for (const row of db.prepare(sql).all()) add(row.path, 'codex', lastUse.get(row.path) || Number(row.at) || 0);
+  } catch (err) {
+    console.error('Codex: база проектов не прочиталась:', err.message);
+  } finally {
+    try { if (db) db.close(); } catch { /* уже закрыта */ }
+  }
+}
+
 async function collectWorkspaces() {
   if (Date.now() - wsCache.at < WS_TTL) return wsCache.items;
   const found = new Map();
@@ -558,7 +602,8 @@ async function collectWorkspaces() {
   };
   const pending = [];
   // Служебные копии не проекты: временные папки Claude и рабочие копии агентов
-  const JUNK = ['/Library/Application Support/Claude/scratch-workspaces/', '/.claude/worktrees/', '/.git/'];
+  const JUNK = ['/Library/Application Support/Claude/scratch-workspaces/', '/.claude/worktrees/', '/.git/',
+    '/Documents/Codex/'];   // папки, которые Codex заводит под чат без проекта
   const add = (raw, source, at) => {
     if (!raw || typeof raw !== 'string') return;
     const abs = path.resolve(raw.replace(/\/$/, ''));
@@ -566,9 +611,9 @@ async function collectWorkspaces() {
     if (JUNK.some((junk) => abs.includes(junk))) return;
     pending.push({ abs, source, at: at || 0 });
   };
-  // ChatGPT (Codex) пока не берём: он отдаёт рабочую папку каждого чата, а не проекты
   await Promise.all([
     scanClaude(add),
+    scanCodex(add),
     scanEditor('Cursor', 'cursor', add),
     scanEditor('Code', 'vscode', add),
   ]);
@@ -664,6 +709,7 @@ const APP_BUNDLES = {
   cursor: '/Applications/Cursor.app',
   obsidian: '/Applications/Obsidian.app',
   claude: '/Applications/Claude.app',
+  codex: '/Applications/ChatGPT.app',        // приложение Codex, оно же ChatGPT (com.openai.codex)
   reveal: '/System/Library/CoreServices/Finder.app',
 };
 const ICON_DIR = path.join(os.tmpdir(), 'docviewer-icons');

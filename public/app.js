@@ -604,7 +604,7 @@ function renderHome({ scroll = 0 } = {}) {
 // Папки берём из того, где вы уже работали: проекты Claude Code, окна Cursor и VS Code,
 // сессии Codex (ChatGPT). Звёздочка добавляет папку в список проектов наверху.
 const PICKER = '!projects';
-const SOURCE_NAMES = { claude: 'Claude Code', cursor: 'Cursor', vscode: 'VS Code' };
+const SOURCE_NAMES = { claude: 'Claude Code', codex: 'Codex', cursor: 'Cursor', vscode: 'VS Code' };
 const shortPath = (p) => (state.home && p.startsWith(state.home) ? '~' + p.slice(state.home.length) : p);
 
 const ws = (action, path, extra = {}) => api('/api/workspaces', {
@@ -1605,9 +1605,10 @@ async function openIn(app, target = state.current) {
       body: JSON.stringify({ path: target, app, project: PROJECT || undefined }),
     });
     if (app === 'reveal') toast('Показано в Finder');
-    else if (app === 'claude') {
+    else if (app === 'claude' || app === 'codex') {
+      const chat = app === 'claude' ? 'Новый чат Claude Code' : 'Новый чат Codex';
       const dir = state.dirSet.has(target) ? target : dirname(target);
-      toast(dir ? 'Новый чат Claude Code: ' + dir : 'Новый чат Claude Code в корне проекта');
+      toast(dir ? chat + ': ' + dir : chat + ' в корне проекта');
     }
     else toast(target ? 'Открыто: ' + target.split('/').pop() : 'Открыт проект целиком');
   } catch (err) { toast('Не получилось: ' + err.message); }

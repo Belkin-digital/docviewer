@@ -178,6 +178,10 @@ button, input { font: inherit; color: inherit; }
 .home.editing .chip.add:hover { border-color: var(--ok); color: var(--ok); }
 
 /* --- экран выбора проекта --- */
+/* На самом экране выбора всё, что правее его кнопки, не нужно: выбирать нечего,
+   пока проект не выбран. Остаётся сама кнопка, кнопка панели и подпись «Выбор проекта». */
+body.picking #goto-btn, body.picking #projects, body.picking #home-btn,
+body.picking #up-btn, body.picking .actions { display: none; }
 #pick-btn { flex: none; width: 30px; height: 28px; padding: 0; display: inline-grid; place-items: center;
   border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg-dim); cursor: pointer; }
 #pick-btn svg { fill: currentColor; display: block; }
@@ -205,7 +209,9 @@ button, input { font: inherit; color: inherit; }
 .ws-sort .chip.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 .ws-when { margin-left: 8px; color: var(--fg-dim); opacity: .75; }
 
-#home-btn { flex: none; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); cursor: pointer; }
+#home-btn { flex: none; width: 30px; height: 28px; padding: 0; display: inline-grid; place-items: center;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg-dim); cursor: pointer; }
+#home-btn svg { fill: currentColor; display: block; }
 #home-btn:hover { border-color: var(--accent); color: var(--accent); }
 #repo-name { cursor: pointer; }
 #repo-name:hover { color: var(--accent); }
@@ -251,8 +257,11 @@ button, input { font: inherit; color: inherit; }
 #resizer:hover, #resizer.dragging { background: var(--accent); border-right-color: var(--accent); }
 body.side-hidden #app { grid-template-columns: 0 0 1fr; }
 body.side-hidden #sidebar, body.side-hidden #resizer { display: none; }
-body.side-hidden #show-side { display: block; }
-#show-side { display: none; flex: none; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); cursor: pointer; }
+body.side-hidden #show-side { display: inline-grid; }
+/* кнопка стоит первой в шапке — у самого края, на месте свёрнутой панели */
+#show-side { display: none; flex: none; width: 30px; height: 28px; padding: 0; place-items: center;
+  border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg-dim); cursor: pointer; }
+#show-side svg { fill: currentColor; display: block; }
 #show-side:hover, #hide-side:hover { border-color: var(--accent); color: var(--accent); }
 .repo-row { display: flex; align-items: center; gap: 8px; }
 .repo-row .repo { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

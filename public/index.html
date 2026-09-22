@@ -36,6 +36,12 @@
 
   <main id="main">
     <header id="toolbar">
+      <button id="show-side" class="ico" title="Показать панель (⌘B)" aria-label="Показать боковую панель">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
+          <rect x="1.2" y="2.2" width="13.6" height="11.6" rx="1.8" fill="none" stroke="currentColor" stroke-width="1.4"/>
+          <rect x="2.6" y="3.6" width="3.4" height="8.8" rx=".8"/>
+        </svg>
+      </button>
       <button id="pick-btn" class="ico" title="Проекты: все папки, с которыми вы работали" aria-label="Проекты">
         <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
           <rect x="1" y="1" width="6" height="6" rx="1.6"/><rect x="9" y="1" width="6" height="6" rx="1.6"/>
@@ -48,8 +54,11 @@
         </svg>
       </button>
       <div id="projects" class="projects" hidden></div>
-      <button id="show-side" title="Показать панель (⌘B)">›</button>
-      <button id="home-btn" title="Меню разделов">Меню</button>
+      <button id="home-btn" class="ico" title="Меню разделов" aria-label="Меню разделов">
+        <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true" focusable="false">
+          <path d="M8 1.6 1.4 7.1l.9 1.1 1-.8v6.3h3.3v-3.9h2.8v3.9h3.3V7.4l1 .8.9-1.1z"/>
+        </svg>
+      </button>
       <button id="up-btn" title="В папку, где лежит документ">↑ Папка</button>
       <div id="crumbs"></div>
       <div class="actions">

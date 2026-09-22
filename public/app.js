@@ -480,6 +480,7 @@ function renderHome({ scroll = 0 } = {}) {
   closeFind();
   state.current = null;
   localStorage.removeItem(key('last'));
+  document.body.classList.remove('picking');
   document.title = 'Документация — навигация';
   $('#crumbs').textContent = 'Меню разделов';
   document.querySelectorAll('.actions button').forEach((b) => { b.disabled = true; });
@@ -689,6 +690,7 @@ async function renderPicker({ refresh = false, keepScroll = false } = {}) {
   closeFind();
   state.current = null;
   localStorage.removeItem(key('last'));
+  document.body.classList.add('picking');   // на экране выбора прячем всю правую часть шапки
   document.title = 'Проекты — просмотрщик';
   $('#crumbs').textContent = 'Выбор проекта';
   document.querySelectorAll('.actions button').forEach((b) => { b.disabled = true; });
@@ -745,7 +747,7 @@ async function renderPicker({ refresh = false, keepScroll = false } = {}) {
   tools.appendChild(sortRow(() => paint(), { fallback: 'date' }));
   head.appendChild(tools);
 
-  head.appendChild(el('p', 'home-sub', 'Папки, с которыми вы работали в Claude Code, Cursor и VS Code. ' +
+  head.appendChild(el('p', 'home-sub', 'Папки, с которыми вы работали в Claude Code, Codex, Cursor и VS Code. ' +
     'Звёздочка добавляет папку в список проектов наверху, «Настроить» убирает лишние в подвал.'));
   home.appendChild(head);
   const list = el('div', 'ws-list');
@@ -1549,6 +1551,7 @@ function highlightQuery(q) {
 }
 
 function renderCrumbs(p) {
+  document.body.classList.remove('picking');
   const c = $('#crumbs');
   c.textContent = '';
   const segs = p.split('/');
@@ -1792,8 +1795,19 @@ function bindUI() {
   $('#goto').onclick = (e) => { if (e.target.id === 'goto') closeGoto(); };
 
   $('#pick-btn').onclick = () => {
-    if (location.hash === '#' + PICKER) renderPicker({ refresh: true });
-    else { saveScrollNow(); location.hash = PICKER; }
+    // Повторный клик закрывает экран выбора. Если мы сами на него ушли, возвращаемся
+    // кнопкой истории: так документ откроется на прежнем месте. Если экран открыли
+    // ссылкой или он остался после перезагрузки, возвращаться в истории некуда —
+    // открываем то, что было до него (в этом случае — корень проекта).
+    if (location.hash === '#' + PICKER) {
+      if (state.pickerBack) history.back();
+      else navigate(state.pickerFrom || '');
+      return;
+    }
+    saveScrollNow();
+    state.pickerFrom = state.current || '';
+    state.pickerBack = true;
+    location.hash = PICKER;
   };
   $('#home-btn').onclick = () => navigate('');
   $('#up-btn').onclick = () => {
@@ -1855,8 +1869,11 @@ function bindUI() {
     const [p, anchor] = decodeURIComponent(location.hash.slice(1)).split('#');
     const scroll = savedScroll();   // есть только у записи, с которой мы уже уходили
     if (p === PICKER) renderPicker({ refresh: true });
-    else if (p) openPath(p, { anchor, scroll });
-    else renderHome({ scroll });
+    else {
+      state.pickerBack = false;   // с экрана выбора ушли — возвращаться в истории уже некуда
+      if (p) openPath(p, { anchor, scroll });
+      else renderHome({ scroll });
+    }
   });
 
   dark.addEventListener('change', () => { mermaidReady = false; if (state.current) openFile(state.current, { keepScroll: true }); });

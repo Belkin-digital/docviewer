@@ -75,7 +75,9 @@ button, input { font: inherit; color: inherit; }
 #toc a:hover, #toc a.active { color: var(--accent); border-left-color: var(--accent); }
 
 /* --- markdown --- */
-.markdown { max-width: 900px; }
+/* Ширину текста не ограничиваем: при широком окне колонка должна расти, иначе лишнее
+   место уходило в пустое поле справа, между текстом и оглавлением. */
+.markdown { max-width: none; }
 .markdown h1 { font-size: 26px; margin: 0 0 16px; }
 .markdown h2 { font-size: 20px; margin: 28px 0 10px; padding-bottom: 4px; border-bottom: 1px solid var(--line); }
 .markdown h3 { font-size: 16px; margin: 20px 0 8px; }

@@ -280,6 +280,38 @@ function renderMarkdown(body, firstLine) {
   return holder;
 }
 
+// Ссылки в markdown приходят закодированными (`#%D1%80...`), а метки заголовков — обычным
+// текстом, поэтому перед поиском якорь раскодируем.
+const decodeAnchor = (s) => { try { return decodeURIComponent(s); } catch { return s; } };
+// У заголовка со значком в конце («Границы самостоятельности ↻») метка получается с висячим
+// дефисом, а в ссылке его обычно не пишут — поэтому сравниваем без крайних дефисов.
+const softId = (s) => String(s).toLowerCase().replace(/^-+|-+$/g, '');
+
+function findAnchor(doc, want) {
+  if (!want) return null;
+  const soft = softId(want);
+  const heads = [...doc.querySelectorAll('h1, h2, h3, h4, h5, h6')];
+  let exact = null;
+  try { exact = doc.querySelector('#' + CSS.escape(want)); } catch { /* метка не годится для селектора */ }
+  return exact
+    || heads.find((h) => softId(h.id) === soft)
+    || heads.find((h) => softId(slugify(h.textContent)) === soft)
+    || null;
+}
+
+// Прыжок к заголовку внутри открытого документа. push: записать адрес в историю,
+// чтобы «назад» вернуло на прежнее место.
+function jumpToAnchor(want, { pushPath = '' } = {}) {
+  const target = findAnchor($('#doc'), want);
+  if (!target) { toast('Нет такого заголовка: ' + want); return false; }
+  if (pushPath) {
+    saveScrollNow();
+    try { history.pushState({}, '', '#' + encodeURI(pushPath) + '#' + encodeURI(want)); } catch { /* история недоступна */ }
+  }
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  return true;
+}
+
 function slugify(s) {
   return s.toLowerCase().trim().replace(/[^\wа-яё\s-]/gi, '').replace(/\s+/g, '-').slice(0, 80) || 'h';
 }
@@ -341,11 +373,12 @@ async function enhance(doc, filePath) {
   const toc = $('#toc');
   toc.textContent = '';
   const used = new Set();
-  doc.querySelectorAll('h1, h2, h3').forEach((h) => {
+  // Метку ставим всем уровням — ссылка может вести и на h4, — а в оглавление берём h2 и h3.
+  doc.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((h) => {
     let id = slugify(h.textContent);
     let n = 2; while (used.has(id)) id = slugify(h.textContent) + '-' + n++;
     used.add(id); h.id = id;
-    if (h.tagName === 'H1') return;
+    if (h.tagName !== 'H2' && h.tagName !== 'H3') return;
     const a = el('a', h.tagName === 'H3' ? 'lvl3' : 'lvl2', h.textContent);
     a.href = '#' + id;
     a.onclick = (e) => { e.preventDefault(); h.scrollIntoView({ behavior: 'smooth', block: 'start' }); };
@@ -357,7 +390,11 @@ async function enhance(doc, filePath) {
     const href = a.getAttribute('href');
     if (/^(https?:|mailto:)/i.test(href)) { a.target = '_blank'; a.rel = 'noopener'; return; }
     if (href.startsWith('#')) {
-      a.onclick = (e) => { e.preventDefault(); const t = doc.querySelector('#' + CSS.escape(href.slice(1))) || [...doc.querySelectorAll('h1,h2,h3')].find((h) => slugify(h.textContent) === href.slice(1)); if (t) t.scrollIntoView({ behavior: 'smooth' }); };
+      const want = decodeAnchor(href.slice(1));
+      // Адрес пишем целиком (документ + якорь): такую ссылку можно скопировать, а «назад»
+      // вернёт туда, откуда прыгнули.
+      a.href = '#' + filePath + '#' + want;
+      a.onclick = (e) => { e.preventDefault(); jumpToAnchor(want, { pushPath: filePath }); };
       return;
     }
     const [rawPath, anchor] = decodeURI(href).split('#');
@@ -1506,7 +1543,7 @@ async function openFile(p, { anchor = null, keepScroll = false, scroll = 0 } = {
   if (keepScroll) scroller.scrollTop = prevScroll;
   else if (scroll > 0) restoreScroll(scroll);   // вернулись кнопкой «назад»
   else if (anchor) {
-    const t = [...doc.querySelectorAll('h1,h2,h3')].find((h) => h.id === anchor || slugify(h.textContent) === anchor.toLowerCase());
+    const t = findAnchor(doc, decodeAnchor(anchor));
     if (t) t.scrollIntoView({ block: 'start' }); else scroller.scrollTop = 0;
   } else scroller.scrollTop = 0;
 

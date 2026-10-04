@@ -16,8 +16,14 @@ const OPEN_BROWSER = process.env.DOCVIEWER_NO_OPEN !== '1';
 // --- проекты -----------------------------------------------------------------
 // Источники, по убыванию приоритета: аргументы командной строки, DOCVIEWER_ROOTS,
 // projects.json рядом с сервером. Если ничего нет — текущая папка.
-const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'p';
-const expand = (p) => path.resolve(p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p);
+// id из имени: буквы и цифры любых алфавитов, иначе кириллица схлопывается в «p»
+// и проекты с русскими названиями сталкиваются одним id. Коллизии разных папок
+// с одинаковым именем снимает суффикс в loadProjects.
+const slug = (s) => s.toLowerCase().normalize('NFC').replace(/[^\p{L}\p{N}\p{M}]+/gu, '-').replace(/^-+|-+$/g, '') || 'p';
+// macOS отдаёт пути в NFD («найм» из двух кодпоинтов), а в конфигах путь лежит в NFC:
+// строки разные, папка одна — все пути, прошедшие через expand, сравниваем в NFC.
+const norm = (p) => p.normalize('NFC');
+const expand = (p) => norm(path.resolve(p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p));
 
 function loadProjects() {
   let raw = [];
@@ -32,6 +38,7 @@ function loadProjects() {
     } catch { raw = [process.cwd()]; }
   }
   const out = [];
+  const roots = new Set(), ids = new Set();
   for (const item of raw) {
     const entry = typeof item === 'string' ? { path: item } : item;
     if (!entry || !entry.path) continue;
@@ -40,9 +47,14 @@ function loadProjects() {
       console.error(`Пропускаю проект — папки нет: ${root}`);
       continue;
     }
+    if (roots.has(root)) continue;   // одна папка под двумя начертаниями пути (NFC и NFD)
+    roots.add(root);
     const name = entry.name || path.basename(root);
     // fav: false — проект открывается, но в списке наверху не показывается
-    out.push({ id: entry.id || slug(name), name, root, raw: entry.path, fav: entry.fav !== false });
+    let id = entry.id || slug(name);
+    for (let n = 2; ids.has(id); n++) id = `${entry.id || slug(name)}-${n}`;
+    ids.add(id);
+    out.push({ id, name, root, raw: entry.path, fav: entry.fav !== false });
   }
   if (!out.length) {
     const root = process.cwd();
@@ -62,8 +74,24 @@ async function writeProjects(entries) {
   await fsp.writeFile(PROJECTS_FILE, JSON.stringify({ projects: entries }, null, 2) + '\n', 'utf8');
   PROJECTS = loadProjects();
   for (const project of PROJECTS) watchProject(project);
+  for (const [root, watcher] of watchers) {          // убранные проекты перестаём слушать
+    if (!PROJECTS.some((p) => p.root === root)) {
+      try { watcher.close(); } catch { /* уже закрыт */ }
+      watchers.delete(root);
+    }
+  }
+  for (const id of treeCache.keys()) if (!PROJECTS.some((p) => p.id === id)) treeCache.delete(id);
   broadcast({ type: 'projects', at: Date.now() });
 }
+
+// Правка списка проектов — чтение-изменение-запись: два одновременных запроса
+// иначе затирают правки друг друга, поэтому проводим их строго по очереди.
+let projectsQueue = Promise.resolve();
+const serialized = (fn) => {
+  const run = projectsQueue.then(fn, fn);
+  projectsQueue = run.then(() => {}, () => {});
+  return run;
+};
 
 const projectEntries = () => PROJECTS.map((p) => ({
   name: p.name, path: p.raw || shortHome(p.root), ...(p.fav ? {} : { fav: false }),
@@ -71,24 +99,28 @@ const projectEntries = () => PROJECTS.map((p) => ({
 
 // Папка становится проектом: без этого её нельзя открыть по ?project=
 async function ensureProject(abs, fav) {
-  const found = PROJECTS.find((p) => path.resolve(p.root) === path.resolve(abs));
-  const entries = projectEntries();
-  if (found) {
-    const entry = entries.find((e) => expand(e.path) === path.resolve(found.root));
-    if (entry) { if (fav === true) delete entry.fav; if (fav === false) entry.fav = false; }
-    if (fav !== undefined) await writeProjects(entries);
-    return (PROJECTS.find((p) => path.resolve(p.root) === path.resolve(abs)) || found).id;
-  }
-  const name = path.basename(abs) || abs;
-  entries.push({ name, path: shortHome(abs), ...(fav ? {} : { fav: false }) });
-  await writeProjects(entries);
-  const added = PROJECTS.find((p) => path.resolve(p.root) === path.resolve(abs));
-  return added ? added.id : '';
+  return serialized(async () => {
+    const found = PROJECTS.find((p) => path.resolve(p.root) === path.resolve(abs));
+    const entries = projectEntries();
+    if (found) {
+      const entry = entries.find((e) => expand(e.path) === path.resolve(found.root));
+      if (entry) { if (fav === true) delete entry.fav; if (fav === false) entry.fav = false; }
+      if (fav !== undefined) await writeProjects(entries);
+      return (PROJECTS.find((p) => path.resolve(p.root) === path.resolve(abs)) || found).id;
+    }
+    const name = path.basename(abs) || abs;
+    entries.push({ name, path: shortHome(abs), ...(fav ? {} : { fav: false }) });
+    await writeProjects(entries);
+    const added = PROJECTS.find((p) => path.resolve(p.root) === path.resolve(abs));
+    return added ? added.id : '';
+  });
 }
 
 async function dropProject(abs) {
-  const entries = projectEntries().filter((e) => expand(e.path) !== path.resolve(abs));
-  await writeProjects(entries);
+  return serialized(async () => {
+    const entries = projectEntries().filter((e) => expand(e.path) !== path.resolve(abs));
+    await writeProjects(entries);
+  });
 }
 
 const SKIP_DIRS = new Set([
@@ -380,7 +412,6 @@ async function search(project, q, limit = 200) {
       }
     } catch { /* нечитаемый файл пропускаем */ }
     if (nameHit || matches.length) hits.push({ path: f.path, name: f.name, nameHit, matches });
-    if (hits.length >= limit) break;
   }
   const archived = (p) => /(^|\/)(Archive|_archive)(\/|$)/.test(p) ? 1 : 0;
   hits.sort((a, b) =>
@@ -388,7 +419,7 @@ async function search(project, q, limit = 200) {
     (b.nameHit - a.nameHit) ||
     (b.matches.length - a.matches.length) ||
     a.path.localeCompare(b.path, 'ru'));
-  return hits;
+  return hits.slice(0, limit);   // лимит после сортировки: иначе релевантные файлы в конце дерева терялись
 }
 
 // --- SSE ---------------------------------------------------------------------
@@ -606,7 +637,7 @@ async function collectWorkspaces() {
     '/Documents/Codex/'];   // папки, которые Codex заводит под чат без проекта
   const add = (raw, source, at) => {
     if (!raw || typeof raw !== 'string') return;
-    const abs = path.resolve(raw.replace(/\/$/, ''));
+    const abs = norm(path.resolve(raw.replace(/\/$/, '')));
     if (abs === '/' || abs === HOME) return;               // корень диска и домашняя папка — не проекты
     if (JUNK.some((junk) => abs.includes(junk))) return;
     pending.push({ abs, source, at: at || 0 });
@@ -766,9 +797,24 @@ function send(res, code, body, type = 'text/plain; charset=utf-8', extra = {}) {
 }
 const json = (res, code, obj) => send(res, code, JSON.stringify(obj), 'application/json; charset=utf-8');
 
+// Сервер слушает только на 127.0.0.1, но чужой браузерный контекст всё равно может
+// достучаться: страница злого сайта шлёт POST с чужим Origin (Content-Type text/plain
+// проходит без CORS-preflight, а readBody его не проверяет), а DNS-rebinding подставляет
+// чужой Host. Такие запросы не обслуживаем — проверка стоит в самом начале обработчиков.
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', os.hostname().toLowerCase()]);
+const hostnameOf = (host) => {
+  const h = String(host || '');
+  if (h.startsWith('[')) { const end = h.indexOf(']'); return end < 0 ? '' : h.slice(1, end).toLowerCase(); }
+  const colon = h.lastIndexOf(':');
+  return (colon > -1 ? h.slice(0, colon) : h).toLowerCase();
+};
+const fromViewer = (req) =>
+  LOCAL_HOSTS.has(hostnameOf(req.headers.host)) &&
+  (!req.headers.origin || req.headers.origin === `http://${req.headers.host}`);
+
 async function serveStatic(res, baseDir, rel) {
   const abs = path.resolve(baseDir, rel.replace(/^\/+/, ''));
-  if (!abs.startsWith(baseDir)) return send(res, 403, 'forbidden');
+  if (abs !== baseDir && !abs.startsWith(baseDir + path.sep)) return send(res, 403, 'forbidden');
   try {
     const buf = await fsp.readFile(abs);
     send(res, 200, buf, MIME[path.extname(abs).toLowerCase()] || 'application/octet-stream');
@@ -801,6 +847,7 @@ let ASSET_ORIGIN = '';
 const assetServer = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   try {
+    if (!fromViewer(req)) return send(res, 403, 'forbidden');
     if (url.pathname.startsWith('/raw/')) return serveProjectFile(res, url.pathname);
     send(res, 404, 'not found');
   } catch (err) {
@@ -812,6 +859,7 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const p = url.pathname;
   try {
+    if (!fromViewer(req)) return json(res, 403, { error: 'запрос не из просмотрщика' });
     if (p === '/' || p === '/index.html') return serveStatic(res, path.join(HERE, 'public'), 'index.html');
     if (p.startsWith('/public/')) return serveStatic(res, path.join(HERE, 'public'), p.slice(8));
     if (p.startsWith('/vendor/')) return serveStatic(res, path.join(HERE, 'vendor'), p.slice(8));
@@ -877,7 +925,7 @@ const server = http.createServer(async (req, res) => {
       });
       if (!chosen) return json(res, 200, { path: '' });     // отменили выбор
       const file = await readWorkspacesFile();
-      const abs = chosen.replace(/\/$/, '');
+      const abs = expand(chosen);   // osascript отдаёт путь в NFD — приводим к NFC, как везде
       file.extra = [...file.extra.filter((x) => expand(x) !== abs), shortHome(abs)];
       await writeWorkspacesFile(file);
       return json(res, 200, { path: abs });
@@ -937,10 +985,6 @@ const server = http.createServer(async (req, res) => {
       const q = (url.searchParams.get('q') || '').trim();
       if (q.length < 2) return json(res, 200, { query: q, hits: [] });
       return json(res, 200, { query: q, hits: await search(project, q) });
-    }
-
-    if (req.method === 'POST' && req.headers.origin && req.headers.origin !== `http://${req.headers.host}`) {
-      return json(res, 403, { error: 'запрос не из просмотрщика' });   // защита от встроенных страниц
     }
 
     if (p === '/api/open' && req.method === 'POST') {

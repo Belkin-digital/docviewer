@@ -176,7 +176,8 @@ function splitFrontmatter(text) {
   const end = text.indexOf('\n---', 3);
   if (end < 0) return { meta: null, body: text, offset: 0 };
   const raw = text.slice(text.indexOf('\n') + 1, end);
-  const bodyAt = text.indexOf('\n', end + 1) + 1;
+  const nl = text.indexOf('\n', end + 1);
+  const bodyAt = nl < 0 ? text.length : nl + 1;   // после закрывающего --- перевода строки может не быть
   const body = text.slice(bodyAt);
   const offset = countLines(text.slice(0, bodyAt));   // столько строк файла ушло на заголовок
   const meta = [];
@@ -397,7 +398,9 @@ async function enhance(doc, filePath) {
       a.onclick = (e) => { e.preventDefault(); jumpToAnchor(want, { pushPath: filePath }); };
       return;
     }
-    const [rawPath, anchor] = decodeURI(href).split('#');
+    let decoded = href;
+    try { decoded = decodeURI(href); } catch { /* битый percent-encoding — берём как есть */ }
+    const [rawPath, anchor] = decoded.split('#');
     const target = resolvePath(base, rawPath);
     if (!state.fileSet.has(target) && !state.dirSet.has(target)) a.classList.add('missing');
     a.href = '#' + target + (anchor ? '#' + anchor : '');
@@ -1227,7 +1230,11 @@ function bindFind() {
 /* ---------- открытие файла ---------- */
 async function navigate(p, anchor) {
   saveScrollNow();   // уходим с этой записи истории — запоминаем, где стояли
-  if (!p) { location.hash = ''; renderHome(); return; }
+  if (!p) {
+    if (location.hash) location.hash = '';   // меню отрисует hashchange
+    else renderHome();                       // хеша нет — hashchange не придёт
+    return;
+  }
   if (state.fileSet.has(p) && !handledInBrowser(p)) return openIn('default', p);
   const target = '#' + p + (anchor ? '#' + anchor : '');
   if (location.hash === target) return openPath(p, { anchor });  // тот же адрес — hashchange не придёт
@@ -1287,7 +1294,8 @@ function folderTile(entry) {
   return tile;
 }
 
-async function openDir(p, { scroll = 0 } = {}) {
+async function openDir(p, { scroll = 0, keepScroll = false } = {}) {
+  const prevScroll = $('#scroller').scrollTop;
   state.current = p;
   localStorage.setItem(key('last'), p);
   renderCrumbs(p);
@@ -1317,7 +1325,8 @@ async function openDir(p, { scroll = 0 } = {}) {
   head.appendChild(sortRow(paint, { fallback: 'name' }));
   doc.appendChild(list);
   paint();
-  restoreScroll(scroll);
+  if (keepScroll) $('#scroller').scrollTop = prevScroll;   // живое обновление не уводит из места
+  else restoreScroll(scroll);
 
   function paint() {
     list.textContent = '';
@@ -1516,7 +1525,7 @@ async function openFile(p, { anchor = null, keepScroll = false, scroll = 0 } = {
 
   if (data.binary) {
     if (IMG_EXT.has(ext)) {
-      const img = el('img'); img.src = '/raw?p=' + encodeURIComponent(p); doc.appendChild(img);
+      const img = el('img'); img.src = withProject('/raw?p=' + encodeURIComponent(p)); doc.appendChild(img);
     } else {
       const emb = document.createElement('embed');
       emb.src = withProject('/raw?p=' + encodeURIComponent(p)); emb.type = 'application/pdf';
@@ -1772,10 +1781,12 @@ function connectEvents() {
     if (msg.project && PROJECT && msg.project !== PROJECT) return;
     if (msg.paths.some((p) => p === 'docviewer.json')) await loadConfig();
     await loadTree();
-    if (!state.current) { renderHome(); return; }
+    if (!state.current) { renderHome({ scroll: $('#scroller').scrollTop }); return; }
     if (state.dirSet.has(state.current)) {
       // открыта папка — перерисовываем её список, если изменилось что-то внутри
-      if (msg.paths.some((p) => p === state.current || dirname(p) === state.current)) await openDir(state.current);
+      if (msg.paths.some((p) => p === state.current || dirname(p) === state.current)) {
+        await openDir(state.current, { keepScroll: true });
+      }
       return;
     }
     if (msg.paths.some((p) => p === state.current)) {
@@ -1791,8 +1802,7 @@ function renderProjectSwitch(meta) {
   host.textContent = '';
   // в списке — только избранные проекты; остальные открываются через экран выбора
   const shown = state.projects.filter((pr) => pr.fav !== false || pr.id === meta.project);
-  if (shown.length < 2) { host.hidden = shown.length < 1; }
-  host.hidden = false;
+  host.hidden = shown.length < 2;   // один проект — переключать нечего
   const select = document.createElement('select');
   select.id = 'project-select';
   select.title = 'Проект: ' + meta.root;
@@ -1820,7 +1830,7 @@ function bindUI() {
       $('#tree').hidden = !isTree; $('#results').hidden = isTree;
       $('#filter').hidden = !isTree; $('#query').hidden = isTree;
       (isTree ? $('#filter') : $('#query')).focus();
-      if (isTree) $('#counter').textContent = `${state.files.length} файлов`;
+      if (isTree) $('#counter').textContent = filesWord(state.files.length);
     };
   });
 
@@ -1925,6 +1935,12 @@ async function boot() {
   state.root = meta.root || '';
   state.home = meta.home || '';
   state.meta = meta;
+  // В ссылке мог остаться устаревший id проекта (например, после починки коллизий slug):
+  // сервер тогда отдал первый попавшийся проект — переадресуем на актуальный адрес.
+  if (PROJECT && meta.project !== PROJECT) {
+    location.replace(`${location.pathname}?project=${encodeURIComponent(meta.project)}${location.hash}`);
+    return;
+  }
   $('#repo-name').textContent = meta.name;
   $('#repo-name').title = meta.root;
   $('#repo-name').onclick = () => navigate('');

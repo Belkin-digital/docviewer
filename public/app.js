@@ -860,8 +860,8 @@ function wsTile(item, redraw) {
     apps.appendChild(img);
   }
   if (!item.sources.length) apps.appendChild(el('span', 'ws-manual', '＋'));   // добавлена вручную
-  top.appendChild(apps);
   top.appendChild(el('span', 'tile-title', projectLabel(item)));
+  top.appendChild(apps);
   tile.appendChild(top);
   if (state.picking) {
     tile.appendChild(projectSettingsEditor(item.path, item, (info) => {

@@ -385,6 +385,4 @@ body.side-hidden #show-side { display: inline-grid; }
 .home .file-tiles { margin-bottom: 8px; }
 .home.editing .ftile.editable { border-style: dashed; }
 .home.editing .ftile.editable:hover { border-color: #d14; }
-.home.editing .ftile.file-hidden { opacity: .55; }
-.home.editing .ftile.file-hidden:hover { opacity: 1; border-color: var(--ok); }
 .ftile-visibility { color: var(--fg-dim); font-size: 12px; }

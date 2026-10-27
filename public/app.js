@@ -695,7 +695,7 @@ function renderHome({ scroll = 0 } = {}) {
   if (cfg.notice) head.appendChild(el('p', 'home-warn', cfg.notice));
   if (state.editing) {
     head.appendChild(el('p', 'home-hint',
-      'Клик по разделу убирает его вниз, клик по папке внизу поднимает в меню. Клик по файлу в корне скрывает его, повторный — возвращает. Меню сохраняется сразу, заголовок и описание — кнопкой «Сохранить».'));
+      'Клик по разделу убирает его вниз, клик по папке внизу поднимает в меню. Клик по файлу в корне переносит его в «Остальные файлы», клик там — возвращает. Меню сохраняется сразу, заголовок и описание — кнопкой «Сохранить».'));
   }
   home.appendChild(head);
 
@@ -783,22 +783,36 @@ function renderHome({ scroll = 0 } = {}) {
   }
 
   const hiddenFiles = new Set(state.hiddenFiles);
-  const rootFiles = state.tree.filter((n) => !n.dir && (state.editing || !hiddenFiles.has(n.path)));
+  const rootFiles = state.tree.filter((n) => !n.dir && !hiddenFiles.has(n.path));
   if (rootFiles.length) {
     home.appendChild(el('div', 'home-rest-title', 'Файлы в корне'));
     const grid = el('div', 'file-tiles');
     for (const file of sortEntries(rootFiles, effSort('name'))) {
       const tile = state.editing ? fileTile(file, () => toggleRootFile(file.path)) : fileTile(file);
       if (state.editing) {
-        const hidden = hiddenFiles.has(file.path);
         tile.classList.add('editable');
-        tile.classList.toggle('file-hidden', hidden);
-        tile.title = (hidden ? 'Показать «' : 'Скрыть «') + file.name + '» в меню';
-        tile.appendChild(el('div', 'ftile-visibility', hidden ? 'Скрыт · нажмите, чтобы показать' : 'Нажмите, чтобы скрыть'));
+        tile.title = 'Убрать «' + file.name + '» в «Остальные файлы»';
+        tile.appendChild(el('div', 'ftile-visibility', 'Нажмите, чтобы убрать вниз'));
       }
       grid.appendChild(tile);
     }
     home.appendChild(grid);
+  }
+  const otherFiles = state.tree.filter((n) => !n.dir && hiddenFiles.has(n.path));
+  if (otherFiles.length) {
+    home.appendChild(el('div', 'home-rest-title', state.editing
+      ? 'Остальные файлы — клик возвращает в основной блок' : 'Остальные файлы'));
+    const row = el('div', 'home-rest root-files-rest');
+    for (const file of sortEntries(otherFiles, effSort('name'))) {
+      const chip = el('button', 'chip', file.name);
+      chip.type = 'button';
+      const label = file.title ? cap(file.title) + ' (' + file.name + ')' : file.name;
+      chip.title = state.editing ? 'Вернуть «' + label + '» в основной блок' : label;
+      if (state.editing) chip.classList.add('add');
+      chip.onclick = state.editing ? () => toggleRootFile(file.path) : () => navigate(file.path);
+      row.appendChild(chip);
+    }
+    home.appendChild(row);
   }
 
   doc.appendChild(home);

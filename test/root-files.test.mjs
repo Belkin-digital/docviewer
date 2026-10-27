@@ -132,8 +132,10 @@ async function browser(origin) {
     home: () => nodes.get('#doc').children[0],
     rootGrid: () => {
       const children = nodes.get('#doc').children[0].children;
-      return children[children.findIndex((n) => n.textContent === 'Файлы в корне') + 1];
+      const index = children.findIndex((n) => n.textContent === 'Файлы в корне');
+      return index < 0 ? null : children[index + 1];
     },
+    otherFiles: () => nodes.get('#doc').querySelector('.root-files-rest'),
   };
 }
 
@@ -145,17 +147,26 @@ test('root files render below other folders and can be hidden and restored', asy
   assert.match(app.rootGrid().textContent, /Обзор проекта/);
   assert.doesNotMatch(app.rootGrid().textContent, /Notes|Вложенный документ/);
   assert.ok(app.state.fileSet.has('notes.txt'), 'hidden files remain in the tree');
+  let hidden = app.otherFiles().children[0];
+  assert.equal(hidden.tagName, 'BUTTON', 'compact files support native keyboard activation');
+  assert.equal(hidden.textContent, 'notes.txt');
+  assert.equal(app.otherFiles().querySelector('.ftile'), null);
+  await hidden.onclick();
+  assert.equal(app.location.hash, '#notes.txt');
 
   app.rootGrid().children.find((n) => n.textContent.includes('Обзор проекта')).onclick();
   assert.equal(app.location.hash, '#README.md');
   app.location.hash = '';
   app.state.editing = true;
   app.renderHome();
-  let hidden = app.rootGrid().querySelector('.file-hidden');
-  assert.match(hidden.textContent, /Notes/);
-  assert.match(hidden.textContent, /Скрыт/);
+  hidden = app.otherFiles().children[0];
+  assert.equal(hidden.textContent, 'notes.txt');
+  assert.ok(hidden.classList.contains('add'));
   await hidden.onclick();
   assert.deepEqual((await request('/api/config')).hiddenFiles, []);
+  assert.equal(app.otherFiles(), null);
+  assert.match(app.rootGrid().textContent, /Notes/);
+  assert.equal(app.location.hash, '');
 
   const tile = app.rootGrid().children.find((n) => n.textContent.includes('Обзор проекта'));
   let prevented = false;
@@ -168,15 +179,34 @@ test('root files render below other folders and can be hidden and restored', asy
   assert.equal(prevented, true);
   assert.equal(app.location.hash, '');
   assert.ok(app.state.hiddenFiles.includes('README.md'));
-  hidden = app.rootGrid().querySelector('.file-hidden');
-  assert.match(hidden.textContent, /Обзор проекта/);
+  hidden = app.otherFiles().children[0];
+  assert.equal(hidden.textContent, 'README.md');
+  assert.match(hidden.title, /Обзор проекта/);
+  assert.doesNotMatch(app.rootGrid().textContent, /Обзор проекта/);
 
   const reloaded = await browser(origin);
   assert.doesNotMatch(reloaded.rootGrid().textContent, /Обзор проекта/);
+  assert.equal(reloaded.otherFiles().children[0].textContent, 'README.md');
   const saved = JSON.parse(await fs.readFile(configFile, 'utf8'));
   assert.deepEqual(saved, { ...config, hiddenFiles: ['README.md'] });
   await request('/api/config', { sections: [] });
   assert.deepEqual((await request('/api/config')).hiddenFiles, ['README.md']);
+});
+
+test('all root files can stay compact and missing hidden files are omitted', async (t) => {
+  const { origin, request } = await fixture(t);
+  await request('/api/config', { hiddenFiles: ['README.md', 'notes.txt', 'docviewer.json', 'missing.md'] });
+  const app = await browser(origin);
+  assert.equal(app.rootGrid(), null);
+  const names = () => app.otherFiles().children.map((n) => n.textContent);
+  assert.deepEqual(names(), ['docviewer.json', 'notes.txt', 'README.md']);
+  assert.equal(app.otherFiles().querySelector('.ftile'), null);
+  app.state.editing = true;
+  app.renderHome();
+  assert.equal(app.rootGrid(), null);
+  await app.otherFiles().children.find((n) => n.textContent === 'README.md').onclick();
+  assert.match(app.rootGrid().textContent, /Обзор проекта/);
+  assert.deepEqual(names(), ['docviewer.json', 'notes.txt']);
 });
 
 test('another browser updates clean title fields and project labels while preserving unsaved input', async (t) => {
@@ -320,4 +350,6 @@ test('files without extensions render on the project home and remain configurabl
   assert.ok((await request('/api/config')).hiddenFiles.includes('LICENSE'));
   const reloaded = await browser(origin);
   assert.ok(!reloaded.rootGrid().children.some((n) => n.querySelector('.fname')?.textContent === 'LICENSE'));
+  const compact = reloaded.otherFiles().children.find((n) => n.textContent === 'LICENSE');
+  assert.ok(compact, 'extensionless files also move to the compact row');
 });

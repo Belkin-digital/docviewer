@@ -24,7 +24,14 @@ const state = {
   editing: false, showSource: false, assets: '',
 };
 let metadataRevision = 0;
-const projectLabel = (p) => p.title && p.title !== 'Навигация по документации' ? p.title : (p.name || '');
+const projectLabel = (p) => p.title || p.name || '';
+const projectFolder = (root) => String(root || '').replace(/\/+$/, '').split('/').pop();
+function projectFolderCaption(root, title) {
+  const folder = projectFolder(root);
+  const caption = el('div', 'project-folder', folder);
+  caption.hidden = !folder || title === folder;
+  return caption;
+}
 
 function applyProjectInfo(root, info) {
   metadataRevision++;
@@ -40,6 +47,8 @@ function applyProjectInfo(root, info) {
     if (!state.current && location.hash !== '#' + PICKER) {
       const heading = $('#doc').querySelector('.project-heading');
       if (heading) heading.textContent = info.title;
+      const folder = $('#doc').querySelector('.project-folder');
+      if (folder) folder.hidden = !projectFolder(root) || info.title === projectFolder(root);
       if (state.meta) document.title = projectLabel(state.meta) + ' — документация';
     }
   }
@@ -50,7 +59,11 @@ function applyProjectInfo(root, info) {
   for (const tile of document.querySelectorAll('.ws-tile')) {
     if (tile.dataset.path === root) {
       const item = (state.wsItems || []).find((it) => it.path === root);
-      if (item) tile.querySelector('.tile-title').textContent = projectLabel(item);
+      if (item) {
+        tile.querySelector('.tile-title').textContent = projectLabel(item);
+        const folder = tile.querySelector('.project-folder');
+        if (folder) folder.hidden = !projectFolder(root) || item.title === projectFolder(root);
+      }
     }
   }
 }
@@ -201,7 +214,7 @@ async function loadConfig() {
     state.favorites = state.config.favorites || [];
     applyProjectInfo(state.root, { title: config.title, description: config.description });
   } catch (err) {
-    state.config = { title: 'Навигация по документации', description: '', sections: [], notice: 'Настройки разделов не прочитаны: ' + err.message };
+    state.config = { title: projectLabel(state.meta || {}) || projectFolder(state.root) || 'Проект', description: '', sections: [], notice: 'Настройки разделов не прочитаны: ' + err.message };
     state.sections = [];
   }
 }
@@ -587,7 +600,7 @@ function projectSettingsEditor(root, settings, onSave) {
   const titleLabel = el('label', 'description-label', 'Название проекта');
   const title = el('input', 'project-title-input');
   title.type = 'text';
-  title.value = settings.title || 'Навигация по документации';
+  title.value = projectLabel(settings) || projectFolder(root) || projectLabel(state.meta || {});
   title.required = true;
   title.maxLength = 200;
   titleLabel.appendChild(title);
@@ -658,7 +671,7 @@ function renderHome({ scroll = 0 } = {}) {
   doc.textContent = '';
   const home = el('div', 'home');
   if (state.editing) home.classList.add('editing');
-  const cfg = state.config || { title: 'Навигация по документации', description: '', sections: [] };
+  const cfg = state.config || { title: projectLabel(state.meta || {}) || projectFolder(state.root) || 'Проект', description: '', sections: [] };
   document.title = (projectLabel({ name: state.meta?.name, title: cfg.title }) || 'Документация') + ' — документация';
 
   const head = el('div', 'home-head');
@@ -674,6 +687,7 @@ function renderHome({ scroll = 0 } = {}) {
   titleRow.appendChild(setup);
   titleRow.appendChild(sortRow(() => renderHome({ scroll: $('#scroller').scrollTop }), { custom: 'Как настроено' }));
   head.appendChild(titleRow);
+  head.appendChild(projectFolderCaption(state.root, cfg.title));
   if (state.editing) {
     head.appendChild(projectSettingsEditor(state.root, cfg, (info) => {
       Object.assign(state.config, info);
@@ -861,6 +875,7 @@ function wsTile(item, redraw) {
   }
   if (!item.sources.length) apps.appendChild(el('span', 'ws-manual', '＋'));   // добавлена вручную
   top.appendChild(el('span', 'tile-title', projectLabel(item)));
+  top.appendChild(projectFolderCaption(item.path, projectLabel(item)));
   top.appendChild(apps);
   tile.appendChild(top);
   if (state.picking) {

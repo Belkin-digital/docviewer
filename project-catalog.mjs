@@ -195,7 +195,7 @@ async function workspaceList(projects = loadProjects(), { starredOnly = false } 
       ...it,
       name: project ? project.name : it.name,
       ...fileDates(st),
-      ...await readProjectInfo(it.path),
+      ...await readProjectInfo(it.path, project ? project.name : it.name),
       hidden: hiddenSet.has(it.path),
       listed: !!project,
       fav: !!project && project.fav,

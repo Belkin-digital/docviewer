@@ -270,6 +270,35 @@ test('home settings edit title and the single description and survive reload', a
   assert.equal(saved.title, title.value);
   assert.equal(saved.description, description.value);
   assert.equal(Object.hasOwn(saved, 'subtitle'), false);
+  assert.equal(loaded.home().querySelector('.project-folder').textContent, path.basename(path.dirname(configFile)));
+  assert.equal(loaded.home().querySelector('.project-folder').hidden, false);
+});
+
+test('home, picker and settings share one title and show the folder only for a different title', async (t) => {
+  const { origin, configFile, config } = await fixture(t);
+  const root = path.dirname(configFile);
+  const folder = path.basename(root);
+  for (const stored of [undefined, 'Навигация по документации', 'Мой заголовок']) {
+    const cfg = { ...config };
+    if (stored === undefined) delete cfg.title;
+    else cfg.title = stored;
+    await fs.writeFile(configFile, JSON.stringify(cfg));
+    const app = await browser(origin);
+    const expected = stored === 'Мой заголовок' ? stored : folder;
+    assert.equal(app.state.config.title, expected);
+    assert.equal(app.home().querySelector('.project-heading').textContent, expected);
+    assert.equal(app.home().querySelector('.project-folder').textContent, folder);
+    assert.equal(app.home().querySelector('.project-folder').hidden, expected === folder);
+    app.state.editing = true;
+    app.renderHome();
+    assert.equal(app.home().querySelector('.project-title-input').value, expected);
+    app.state.picking = true;
+    const tile = app.wsTile({ path: root, name: folder, title: app.state.config.title, sources: [] }, () => {});
+    assert.equal(tile.querySelector('.tile-title').textContent, expected);
+    assert.equal(tile.querySelector('.project-title-input').value, expected);
+    assert.equal(tile.querySelector('.project-folder').textContent, folder);
+    assert.equal(tile.querySelector('.project-folder').hidden, expected === folder);
+  }
 });
 
 test('files without extensions render on the project home and remain configurable', async (t) => {

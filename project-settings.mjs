@@ -4,7 +4,12 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 export const DESCRIPTION_LIMIT = 2000;
-export const DEFAULT_TITLE = 'Навигация по документации';
+const LEGACY_TITLE = 'Навигация по документации';
+
+export function resolveProjectTitle(title, name) {
+  const value = typeof title === 'string' ? title.trim() : '';
+  return value && value !== LEGACY_TITLE ? value : name;
+}
 
 export function validateTitle(value) {
   if (typeof value !== 'string' || !value.trim()) throw new Error('title должен быть непустой строкой');
@@ -36,15 +41,15 @@ export async function readSettings(root) {
   return normalizeSettings(settings);
 }
 
-export async function readProjectInfo(root) {
+export async function readProjectInfo(root, name = path.basename(root)) {
   // Один повреждённый/недоступный конфиг не ломает каталог остальных проектов.
   try {
     const settings = await readSettings(root);
     return {
-      title: typeof settings?.title === 'string' && settings.title.trim() ? settings.title : DEFAULT_TITLE,
+      title: resolveProjectTitle(settings?.title, name),
       description: typeof settings?.description === 'string' ? settings.description : '',
     };
-  } catch { return { title: DEFAULT_TITLE, description: '' }; }
+  } catch { return { title: name, description: '' }; }
 }
 
 export async function writeSettings(root, settings) {

@@ -214,3 +214,32 @@ test('legacy subtitle becomes the only editable description; title reaches UI an
   }
   assert.equal((await request('/api/project-settings', {})).status, 400);
 });
+
+test('default titles are resolved identically by config, catalog, meta and MCP', async (t) => {
+  const f = await fixture(t);
+  const file = path.join(f.favorite, 'docviewer.json');
+  const request = await web(f);
+  const c = client(f.start('mcp-server.mjs'));
+  await c.initialize();
+  for (const title of [undefined, '', '  ', 'Навигация по документации', 'Собственное название']) {
+    const cfg = { ...f.settings };
+    if (title === undefined) delete cfg.title;
+    else cfg.title = title;
+    const original = JSON.stringify(cfg);
+    await fs.writeFile(file, original);
+    const expected = title === 'Собственное название' ? title : 'СМК';
+    assert.equal((await request('/api/config')).data.title, expected);
+    const meta = (await request('/api/meta')).data;
+    assert.equal(meta.title, expected);
+    assert.equal(meta.projects[0].title, expected);
+    assert.equal((await request('/api/projects')).data.projects[0].title, expected);
+    assert.equal((await request('/api/workspaces')).data.items.find((it) => it.path === f.favorite).title, expected);
+    assert.equal((await c.tool('get_project', { path: f.favorite })).structuredContent.project.title, expected);
+    assert.equal(await fs.readFile(file, 'utf8'), original, 'read-only requests do not migrate settings');
+  }
+  assert.equal((await c.tool('get_project', { path: f.editor })).structuredContent.project.title, 'Cursor project');
+  assert.equal((await c.tool('get_project', { path: f.hidden })).structuredContent.project.title, 'Hidden');
+  await fs.writeFile(file, '{ broken');
+  assert.equal((await request('/api/config')).data.title, 'СМК');
+  assert.equal((await c.tool('get_project', { path: f.favorite })).structuredContent.project.title, 'СМК');
+});

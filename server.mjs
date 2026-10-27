@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadProjects, workspaceList as catalogWorkspaces, expand, shortHome,
   readWorkspacesFile, writeWorkspacesFile, addWorkspace } from './project-catalog.mjs';
-import { readSettings, readProjectInfo, writeSettings, serializeSettings, validateDescription, validateTitle, DEFAULT_TITLE } from './project-settings.mjs';
+import { readSettings, readProjectInfo, writeSettings, serializeSettings, validateDescription, validateTitle, resolveProjectTitle } from './project-settings.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PORT_BASE = Number(process.env.DOCVIEWER_PORT || 4179);
@@ -26,7 +26,7 @@ const OPEN_BROWSER = process.env.DOCVIEWER_NO_OPEN !== '1';
 let PROJECTS = loadProjects();
 const projectById = (id) => PROJECTS.find((p) => p.id === id) || PROJECTS[0];
 const projectSummaries = () => Promise.all(PROJECTS.map(async ({ id, name, root, fav }) =>
-  ({ id, name, root, fav, ...await readProjectInfo(root) })));
+  ({ id, name, root, fav, ...await readProjectInfo(root, name) })));
 const PROJECTS_FILE = path.join(HERE, 'projects.json');
 
 // Список проектов правится прямо из интерфейса, поэтому перечитываем его на ходу:
@@ -162,7 +162,7 @@ async function readConfig(project) {
     cfg = await readSettings(root);
     if (!cfg) throw Object.assign(new Error('файла нет'), { code: 'ENOENT' });
   } catch (err) {
-    cfg = { title: DEFAULT_TITLE, description: '', sections: await topLevelSections(root) };
+    cfg = { description: '', sections: await topLevelSections(root) };
     source = 'default';
     notice = err.code === 'ENOENT'
       ? `${CONFIG_FILE} в корне проекта нет — показаны все папки верхнего уровня`
@@ -202,7 +202,7 @@ async function readConfig(project) {
 
   return {
     project: project.id,
-    title: cfg.title || DEFAULT_TITLE,
+    title: resolveProjectTitle(cfg.title, project.name),
     description: typeof cfg.description === 'string' ? cfg.description : '',
     sections,
     hidden,
@@ -252,7 +252,7 @@ async function writeConfig(project, { sections: paths, hiddenFiles, description,
   }
 
   const out = {
-    title: cfg.title || DEFAULT_TITLE,
+    title: resolveProjectTitle(cfg.title, project.name),
     ...Object.fromEntries(Object.entries(cfg).filter(([k]) => !['title', 'sections'].includes(k))),
     sections: cfg.sections || [],
     ...(hiddenFiles !== undefined ? { hiddenFiles: rootFilePaths(hiddenFiles) } : {}),
@@ -712,7 +712,8 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/project-settings' && req.method === 'POST') {
       const body = await readBody(req);
       const root = expand(String(body.path || project.root));
-      if (!PROJECTS.some((pr) => pr.root === root) && !(await workspaceList()).some((it) => it.path === root)) {
+      const known = PROJECTS.find((pr) => pr.root === root) || (await workspaceList()).find((it) => it.path === root);
+      if (!known) {
         return json(res, 400, { error: 'Неизвестный проект' });
       }
       if (!Object.hasOwn(body, 'title') && !Object.hasOwn(body, 'description')) {
@@ -726,7 +727,7 @@ const server = http.createServer(async (req, res) => {
         const cfg = await readSettings(root) || { sections: await topLevelSections(root) };
         await writeSettings(root, { ...cfg, ...changes });
       });
-      const info = await readProjectInfo(root);
+      const info = await readProjectInfo(root, known.name);
       broadcast({ type: 'project-settings', root, ...info });
       return json(res, 200, info);
     }
@@ -790,7 +791,7 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/meta') {
       return json(res, 200, {
         root: project.root, name: project.name, project: project.id, host: os.hostname(), home: os.homedir(),
-        ...await readProjectInfo(project.root),
+        ...await readProjectInfo(project.root, project.name),
         assets: ASSET_ORIGIN,
         projects: await projectSummaries(),
       });

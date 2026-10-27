@@ -224,6 +224,8 @@ body.picking #up-btn, body.picking .actions { display: none; }
 .home-head h1 { font-size: 24px; margin: 0 0 6px; }
 .home-sub { color: var(--fg-dim); margin: 0 0 18px; max-width: 70ch; }
 .project-description { color: var(--fg-dim); line-height: 1.6; max-width: 80ch; white-space: pre-wrap; }
+.project-folder { color: var(--fg-dim); font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.home-head > .project-folder { margin: 4px 0 12px; }
 .project-settings-editor { width: 100%; margin: 10px 0; cursor: default; }
 .description-label { display: block; color: var(--fg-dim); font-size: 13px; }
 .project-settings-editor .description-label + .description-label { margin-top: 12px; }

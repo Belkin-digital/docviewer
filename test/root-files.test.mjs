@@ -274,7 +274,7 @@ test('home settings edit title and the single description and survive reload', a
   assert.equal(loaded.home().querySelector('.project-folder').hidden, false);
 });
 
-test('home, picker and settings share one title and show the folder only for a different title', async (t) => {
+test('home and picker share one title; only the home adds a separate folder caption', async (t) => {
   const { origin, configFile, config } = await fixture(t);
   const root = path.dirname(configFile);
   const folder = path.basename(root);
@@ -296,8 +296,8 @@ test('home, picker and settings share one title and show the folder only for a d
     const tile = app.wsTile({ path: root, name: folder, title: app.state.config.title, sources: [] }, () => {});
     assert.equal(tile.querySelector('.tile-title').textContent, expected);
     assert.equal(tile.querySelector('.project-title-input').value, expected);
-    assert.equal(tile.querySelector('.project-folder').textContent, folder);
-    assert.equal(tile.querySelector('.project-folder').hidden, expected === folder);
+    assert.equal(tile.querySelector('.project-folder'), null);
+    assert.ok(tile.querySelector('.tile-meta').textContent.includes(folder));
   }
 });
 

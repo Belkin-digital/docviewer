@@ -61,8 +61,6 @@ function applyProjectInfo(root, info) {
       const item = (state.wsItems || []).find((it) => it.path === root);
       if (item) {
         tile.querySelector('.tile-title').textContent = projectLabel(item);
-        const folder = tile.querySelector('.project-folder');
-        if (folder) folder.hidden = !projectFolder(root) || item.title === projectFolder(root);
       }
     }
   }
@@ -875,7 +873,6 @@ function wsTile(item, redraw) {
   }
   if (!item.sources.length) apps.appendChild(el('span', 'ws-manual', '＋'));   // добавлена вручную
   top.appendChild(el('span', 'tile-title', projectLabel(item)));
-  top.appendChild(projectFolderCaption(item.path, projectLabel(item)));
   top.appendChild(apps);
   tile.appendChild(top);
   if (state.picking) {

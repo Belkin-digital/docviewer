@@ -23,6 +23,37 @@ const state = {
   wsFav: localStorage.getItem('dv.wsfav') === '1', sort: localStorage.getItem('dv.sort') || 'custom',
   editing: false, showSource: false, assets: '',
 };
+let metadataRevision = 0;
+const projectLabel = (p) => p.title && p.title !== 'Навигация по документации' ? p.title : (p.name || '');
+
+function applyProjectInfo(root, info) {
+  metadataRevision++;
+  const current = root === state.root;
+  for (const item of state.wsItems || []) if (item.path === root) Object.assign(item, info);
+  for (const item of state.projects) if (item.root === root || (current && item.id === state.project)) Object.assign(item, info);
+  if (current) {
+    if (state.config) Object.assign(state.config, info);
+    if (state.meta) {
+      Object.assign(state.meta, info);
+      $('#repo-name').textContent = projectLabel(state.meta);
+    }
+    if (!state.current && location.hash !== '#' + PICKER) {
+      const heading = $('#doc').querySelector('.project-heading');
+      if (heading) heading.textContent = info.title;
+      if (state.meta) document.title = projectLabel(state.meta) + ' — документация';
+    }
+  }
+  if (state.meta) renderProjectSwitch(state.meta);
+  for (const form of document.querySelectorAll('.project-settings-editor')) {
+    if (form.dataset.root === root) form.updateProjectInfo(info);
+  }
+  for (const tile of document.querySelectorAll('.ws-tile')) {
+    if (tile.dataset.path === root) {
+      const item = (state.wsItems || []).find((it) => it.path === root);
+      if (item) tile.querySelector('.tile-title').textContent = projectLabel(item);
+    }
+  }
+}
 
 /* ---------- «Заголовок С Заглавной» для читабельности плиток ---------- */
 function cap(s) { return s ? s[0].toLocaleUpperCase('ru') + s.slice(1) : s; }
@@ -155,12 +186,20 @@ function renderTree() {
 }
 
 async function loadConfig() {
+  const revision = metadataRevision;
   try {
-    state.config = await api('/api/config');
+    const config = await api('/api/config');
+    // Более ранний GET не должен отменять новое имя, уже пришедшее через SSE или сохранение.
+    if (revision !== metadataRevision && state.config) {
+      config.title = state.config.title;
+      config.description = state.config.description;
+    }
+    state.config = config;
     state.sections = state.config.sections || [];
     state.hidden = state.config.hidden || [];
     state.hiddenFiles = state.config.hiddenFiles || [];
     state.favorites = state.config.favorites || [];
+    applyProjectInfo(state.root, { title: config.title, description: config.description });
   } catch (err) {
     state.config = { title: 'Навигация по документации', description: '', sections: [], notice: 'Настройки разделов не прочитаны: ' + err.message };
     state.sections = [];
@@ -544,7 +583,8 @@ function sectionStats(secPath) {
 
 function projectSettingsEditor(root, settings, onSave) {
   const form = el('form', 'project-settings-editor');
-  const titleLabel = el('label', 'description-label', 'Заголовок домашней страницы');
+  form.dataset.root = root || state.root;
+  const titleLabel = el('label', 'description-label', 'Название проекта');
   const title = el('input', 'project-title-input');
   title.type = 'text';
   title.value = settings.title || 'Навигация по документации';
@@ -570,9 +610,18 @@ function projectSettingsEditor(root, settings, onSave) {
   form.appendChild(actions);
   form.onclick = (e) => e.stopPropagation();
   form.onkeydown = (e) => e.stopPropagation();
+  let saved = { title: title.value, description: input.value };
+  const dirty = () => title.value !== saved.title || input.value !== saved.description;
+  form.updateProjectInfo = (info) => {
+    // Обновляем поля, которые пользователь не менял; незавершённый ввод остаётся на месте.
+    if (title.value === saved.title) title.value = info.title;
+    if (input.value === saved.description) input.value = info.description;
+    saved = { title: info.title, description: info.description };
+  };
   form.onsubmit = async (e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (save.disabled) return;
     save.disabled = true;
     status.textContent = 'Сохраняю…';
     try {
@@ -580,10 +629,10 @@ function projectSettingsEditor(root, settings, onSave) {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: root || undefined, title: title.value, description: input.value }),
       });
-      title.value = result.title;
-      input.value = result.description;
+      form.updateProjectInfo(result);
+      applyProjectInfo(form.dataset.root, result);
       onSave(result);
-      status.textContent = 'Сохранено';
+      status.textContent = dirty() ? 'Сохранено. Есть новые изменения' : 'Сохранено';
     } catch (err) { status.textContent = 'Не удалось сохранить: ' + err.message; }
     finally { save.disabled = false; }
   };
@@ -610,10 +659,11 @@ function renderHome({ scroll = 0 } = {}) {
   const home = el('div', 'home');
   if (state.editing) home.classList.add('editing');
   const cfg = state.config || { title: 'Навигация по документации', description: '', sections: [] };
+  document.title = (projectLabel({ name: state.meta?.name, title: cfg.title }) || 'Документация') + ' — документация';
 
   const head = el('div', 'home-head');
   const titleRow = el('div', 'home-title-row');
-  const heading = el('h1', null, cfg.title);
+  const heading = el('h1', 'project-heading', cfg.title);
   titleRow.appendChild(heading);
   const setup = el('button', 'setup-btn', state.editing ? 'Готово' : 'Настроить');
   setup.title = state.editing
@@ -755,9 +805,28 @@ const ws = (action, path, extra = {}) => api('/api/workspaces', {
 });
 
 async function refreshProjects() {
+  const revision = metadataRevision;
   const data = await api('/api/projects');
+  if (revision !== metadataRevision) return;
   state.projects = data.projects || [];
+  for (const item of state.projects) applyProjectInfo(item.root, { title: item.title, description: item.description });
   if (state.meta) renderProjectSwitch(state.meta);
+}
+
+async function refreshProjectMetadata() {
+  try {
+    await refreshProjects();
+    if (location.hash !== '#' + PICKER) {
+      if (!state.current && !state.editing) renderHome({ scroll: $('#scroller').scrollTop });
+      return;
+    }
+    const revision = metadataRevision;
+    const data = await api('/api/workspaces');
+    if (revision !== metadataRevision) return;
+    state.wsItems = data.items || [];
+    for (const item of state.wsItems) applyProjectInfo(item.path, { title: item.title, description: item.description });
+    if (!state.picking) await renderPicker({ keepScroll: true });
+  } catch { /* следующее событие, переподключение или возврат в окно повторит обновление */ }
 }
 
 async function openProjectFolder(item) {
@@ -792,7 +861,7 @@ function wsTile(item, redraw) {
   }
   if (!item.sources.length) apps.appendChild(el('span', 'ws-manual', '＋'));   // добавлена вручную
   top.appendChild(apps);
-  top.appendChild(el('span', 'tile-title', cap(item.name)));
+  top.appendChild(el('span', 'tile-title', projectLabel(item)));
   tile.appendChild(top);
   if (state.picking) {
     tile.appendChild(projectSettingsEditor(item.path, item, (info) => {
@@ -967,7 +1036,7 @@ async function renderPicker({ refresh = false, keepScroll = false } = {}) {
       }
       const chips = el('div', 'chips');
       for (const item of hidden) {
-        const chip = el('button', 'chip', cap(item.name));
+        const chip = el('button', 'chip', projectLabel(item));
         chip.title = [shortPath(item.path), item.description].filter(Boolean).join('\n');
         chip.onclick = async () => {
           if (state.picking) { await ws('show', item.path); reload(); return; }
@@ -1921,15 +1990,23 @@ function bindSidebarControls() {
 function connectEvents() {
   const dot = $('#status');
   const es = new EventSource('/api/events');
-  es.onopen = () => { dot.className = 'dot live'; dot.title = 'Слежу за изменениями'; };
+  let connected = false;
+  es.onopen = async () => {
+    dot.className = 'dot live'; dot.title = 'Слежу за изменениями';
+    if (connected) await refreshProjectMetadata();
+    connected = true;
+  };
+  window.addEventListener('focus', refreshProjectMetadata);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') return refreshProjectMetadata();
+  });
   es.onerror = () => { dot.className = 'dot off'; dot.title = 'Нет связи с сервером'; };
   es.onmessage = async (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'projects') { await refreshProjects(); return; }
     if (msg.type === 'project-settings') {
       const info = { title: msg.title, description: msg.description };
-      for (const item of state.wsItems || []) if (item.path === msg.root) Object.assign(item, info);
-      if (state.root === msg.root && state.config) Object.assign(state.config, info);
+      applyProjectInfo(msg.root, info);
       if (location.hash === '#' + PICKER) {
         if (!state.picking) await renderPicker({ keepScroll: true });
       } else if (state.root === msg.root && !state.current && !state.editing) {
@@ -1974,7 +2051,7 @@ function renderProjectSwitch(meta) {
   for (const pr of shown) {
     const opt = document.createElement('option');
     opt.value = pr.id;
-    opt.textContent = pr.name;
+    opt.textContent = projectLabel(pr);
     if (pr.id === meta.project) opt.selected = true;
     select.appendChild(opt);
   }
@@ -2106,7 +2183,7 @@ async function boot() {
     location.replace(`${location.pathname}?project=${encodeURIComponent(meta.project)}${location.hash}`);
     return;
   }
-  $('#repo-name').textContent = meta.name;
+  $('#repo-name').textContent = projectLabel(meta);
   $('#repo-name').title = meta.root;
   $('#repo-name').onclick = () => navigate('');
   renderProjectSwitch(meta);

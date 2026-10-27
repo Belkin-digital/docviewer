@@ -124,8 +124,9 @@ async function browserHarness(hash = '') {
     ResizeObserver: class { observe() {} },
     document: {
       querySelector: (selector) => { if (!nodes.has(selector)) nodes.set(selector, node()); return nodes.get(selector); },
-      querySelectorAll: () => [], createElement: node, body: node(),
+      querySelectorAll: () => [], createElement: node, body: node(), addEventListener() {},
     },
+    window: { addEventListener() {} },
     EventSource: class { constructor() { events = this; } },
     fetch: async () => { throw new Error('Unexpected fetch'); },
     testHooks: {

@@ -90,32 +90,45 @@ class Element {
 async function browser(origin) {
   const nodes = new Map();
   const location = { search: '', hash: '' };
+  let events;
+  const listeners = new Map();
   const document = {
     createElement: (tag) => new Element(tag), body: new Element('body'),
     querySelector: (selector) => {
       if (!nodes.has(selector)) nodes.set(selector, new Element());
       return nodes.get(selector);
     },
-    querySelectorAll: () => [],
+    querySelectorAll: (selector) => [...new Set([...nodes.values()].flatMap((n) => n.querySelectorAll(selector)))],
+    addEventListener: (name, fn) => listeners.set(name, fn), visibilityState: 'visible',
   };
   const context = vm.createContext({
     document, location, URLSearchParams, setTimeout, clearTimeout,
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
     matchMedia: () => ({ matches: false }), marked: { setOptions() {} },
     ResizeObserver: class { observe() {} }, fetch: (url, opts) => fetch(new URL(url, origin), opts),
+    EventSource: class { constructor() { events = this; } },
+    window: { addEventListener: (name, fn) => listeners.set(name, fn) },
   });
   const source = await fs.readFile(path.join(root, 'public/app.js'), 'utf8');
   const start = source.lastIndexOf('\nboot().catch(');
   assert.ok(start > 0);
   vm.runInContext(source.slice(0, start) + `
-    globalThis.app = { state, loadConfig, loadTree, renderHome };
+    globalThis.app = { state, loadConfig, loadTree, renderHome, connectEvents, wsTile };
   })();`, context);
   const app = context.app;
+  const meta = await (await fetch(new URL('/api/meta', origin))).json();
+  Object.assign(app.state, { root: meta.root, meta, projects: meta.projects });
   await app.loadConfig();
   await app.loadTree();
   app.renderHome();
+  app.connectEvents();
   return {
-    ...app, location,
+    ...app, location, context,
+    metadata: (info) => events.onmessage({ data: JSON.stringify({ type: 'project-settings', root: meta.root, ...info }) }),
+    opened: () => events.onopen(),
+    focus: () => listeners.get('focus')?.(),
+    projectName: () => nodes.get('#repo-name')?.textContent,
+    switchName: () => nodes.get('#projects')?.children[0]?.children[0]?.textContent,
     home: () => nodes.get('#doc').children[0],
     rootGrid: () => {
       const children = nodes.get('#doc').children[0].children;
@@ -164,6 +177,61 @@ test('root files render below other folders and can be hidden and restored', asy
   assert.deepEqual(saved, { ...config, hiddenFiles: ['README.md'] });
   await request('/api/config', { sections: [] });
   assert.deepEqual((await request('/api/config')).hiddenFiles, ['README.md']);
+});
+
+test('another browser updates clean title fields and project labels while preserving unsaved input', async (t) => {
+  const { origin } = await fixture(t);
+  const first = await browser(origin);
+  const second = await browser(origin);
+  for (const app of [first, second]) { app.state.editing = true; app.renderHome(); }
+  const firstForm = first.home().querySelector('.project-settings-editor');
+  const secondForm = second.home().querySelector('.project-settings-editor');
+  firstForm.querySelector('.project-title-input').value = 'Новое название';
+  await firstForm.onsubmit({ preventDefault() {}, stopPropagation() {} });
+  const info = { title: first.state.config.title, description: first.state.config.description };
+  await second.metadata(info);
+  assert.equal(secondForm.querySelector('.project-title-input').value, 'Новое название');
+  assert.equal(second.projectName(), 'Новое название');
+  assert.equal(second.switchName(), 'Новое название');
+
+  secondForm.querySelector('.project-title-input').value = 'Мой несохранённый заголовок';
+  await second.metadata({ title: 'Название из другой вкладки', description: 'Обновлённое описание' });
+  assert.equal(secondForm.querySelector('.project-title-input').value, 'Мой несохранённый заголовок');
+  assert.equal(secondForm.querySelector('.description-input').value, 'Обновлённое описание');
+  const tile = second.wsTile({ path: second.state.root, name: 'folder', sources: [], ...info }, () => {});
+  assert.equal(tile.querySelector('.tile-title').textContent, 'Новое название');
+});
+
+test('focus and SSE reconnect recover metadata missed in another browser', async (t) => {
+  const { origin, request } = await fixture(t);
+  const app = await browser(origin);
+  app.state.editing = true;
+  app.renderHome();
+  await app.opened();
+  await request('/api/project-settings', { title: 'После переподключения' });
+  await app.opened();
+  assert.equal(app.projectName(), 'После переподключения');
+  assert.equal(app.home().querySelector('.project-title-input').value, 'После переподключения');
+  await request('/api/project-settings', { title: 'После возврата в браузер' });
+  await app.focus();
+  assert.equal(app.projectName(), 'После возврата в браузер');
+  assert.equal(app.home().querySelector('.project-title-input').value, 'После возврата в браузер');
+});
+
+test('an older config response cannot revert a title received from another window', async (t) => {
+  const { origin, request } = await fixture(t);
+  const app = await browser(origin);
+  const old = await request('/api/config');
+  let release;
+  const response = new Promise((resolve) => { release = resolve; });
+  app.context.fetch = () => response;
+  const loading = app.loadConfig();
+  await request('/api/project-settings', { title: 'Последнее название' });
+  await app.metadata({ title: 'Последнее название', description: old.description });
+  release({ ok: true, json: async () => old });
+  await loading;
+  assert.equal(app.state.config.title, 'Последнее название');
+  assert.equal(app.projectName(), 'Последнее название');
 });
 
 test('root visibility settings preserve default sections and normalize only root file names', async (t) => {

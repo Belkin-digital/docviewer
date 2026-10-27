@@ -25,6 +25,8 @@ const OPEN_BROWSER = process.env.DOCVIEWER_NO_OPEN !== '1';
 
 let PROJECTS = loadProjects();
 const projectById = (id) => PROJECTS.find((p) => p.id === id) || PROJECTS[0];
+const projectSummaries = () => Promise.all(PROJECTS.map(async ({ id, name, root, fav }) =>
+  ({ id, name, root, fav, ...await readProjectInfo(root) })));
 const PROJECTS_FILE = path.join(HERE, 'projects.json');
 
 // Список проектов правится прямо из интерфейса, поэтому перечитываем его на ходу:
@@ -704,9 +706,7 @@ const server = http.createServer(async (req, res) => {
     const project = projectById(url.searchParams.get('project'));
 
     if (p === '/api/projects') {
-      const projects = await Promise.all(PROJECTS.map(async ({ id, name, root, fav }) =>
-        ({ id, name, root, fav, ...await readProjectInfo(root) })));
-      return json(res, 200, { projects });
+      return json(res, 200, { projects: await projectSummaries() });
     }
 
     if (p === '/api/project-settings' && req.method === 'POST') {
@@ -792,7 +792,7 @@ const server = http.createServer(async (req, res) => {
         root: project.root, name: project.name, project: project.id, host: os.hostname(), home: os.homedir(),
         ...await readProjectInfo(project.root),
         assets: ASSET_ORIGIN,
-        projects: PROJECTS.map(({ id, name, fav }) => ({ id, name, fav })),
+        projects: await projectSummaries(),
       });
     }
 

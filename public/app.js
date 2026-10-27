@@ -18,7 +18,7 @@ const LS = {
 const state = {
   tree: [], files: [], fileSet: new Set(), dirSet: new Set(), dirMap: new Map(), current: null,
   expanded: LS.open, filter: '', tab: 'tree', lastQuery: '',
-  config: null, sections: [], hidden: [], favorites: [], projects: [], project: PROJECT, root: '',
+  config: null, sections: [], hidden: [], hiddenFiles: [], favorites: [], projects: [], project: PROJECT, root: '',
   home: '', meta: null, picking: false, wsItems: null, wsQuery: '',
   wsFav: localStorage.getItem('dv.wsfav') === '1', sort: localStorage.getItem('dv.sort') || 'custom',
   editing: false, showSource: false, assets: '',
@@ -35,6 +35,26 @@ function plural(n, forms) {          // forms: [1 документ, 2 докум
 }
 const docsWord = (n) => `${n} ${plural(n, ['документ', 'документа', 'документов'])}`;
 const filesWord = (n) => `${n} ${plural(n, ['файл', 'файла', 'файлов'])}`;
+
+const dateTimeFormat = new Intl.DateTimeFormat('ru-RU', {
+  day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+});
+function artifactDates(entry) {
+  const caption = el('div', 'artifact-dates');
+  for (const [key, label] of [['birthtime', 'Создано'], ['mtime', 'Изменено']]) {
+    const at = entry[key];
+    const date = new Date(at);
+    const valid = typeof at === 'number' && at > 0 && Number.isFinite(date.getTime());
+    const line = el('span', 'artifact-date', label + ': ');
+    if (valid) {
+      const time = el('time', null, dateTimeFormat.format(date));
+      time.dateTime = date.toISOString();
+      line.appendChild(time);
+    } else line.appendChild(el('span', null, 'нет данных'));
+    caption.appendChild(line);
+  }
+  return caption;
+}
 
 const dark = matchMedia('(prefers-color-scheme: dark)');
 
@@ -139,9 +159,10 @@ async function loadConfig() {
     state.config = await api('/api/config');
     state.sections = state.config.sections || [];
     state.hidden = state.config.hidden || [];
+    state.hiddenFiles = state.config.hiddenFiles || [];
     state.favorites = state.config.favorites || [];
   } catch (err) {
-    state.config = { title: 'Навигация по документации', subtitle: '', sections: [], notice: 'Настройки разделов не прочитаны: ' + err.message };
+    state.config = { title: 'Навигация по документации', description: '', sections: [], notice: 'Настройки разделов не прочитаны: ' + err.message };
     state.sections = [];
   }
 }
@@ -460,16 +481,17 @@ async function enhance(doc, filePath) {
 }
 
 /* ---------- меню разделов ---------- */
-async function saveSections(paths) {
+async function saveMenu(changes) {
   try {
     state.config = await api('/api/config', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sections: paths }),
+      body: JSON.stringify(changes),
     });
     state.sections = state.config.sections || [];
     state.hidden = state.config.hidden || [];
+    state.hiddenFiles = state.config.hiddenFiles || [];
     state.favorites = state.config.favorites || [];
-    renderHome();
+    if (!state.current && location.hash !== '#' + PICKER) renderHome({ scroll: $('#scroller').scrollTop });
     toast('Меню сохранено в docviewer.json');
   } catch (err) {
     toast('Не удалось сохранить: ' + err.message);
@@ -505,8 +527,12 @@ function syncFavButton() {
 }
 
 const sectionPaths = () => state.sections.map((s) => s.path);
+const saveSections = (paths) => saveMenu({ sections: paths });
 const hideSection = (p) => saveSections(sectionPaths().filter((x) => x !== p));
 const showSection = (p) => saveSections([...sectionPaths(), p]);
+const toggleRootFile = (p) => saveMenu({
+  hiddenFiles: state.hiddenFiles.includes(p) ? state.hiddenFiles.filter((x) => x !== p) : [...state.hiddenFiles, p],
+});
 
 function sectionStats(secPath) {
   const files = state.files.filter((f) => f.path === secPath || f.path.startsWith(secPath + '/'));
@@ -514,6 +540,54 @@ function sectionStats(secPath) {
   const node = state.dirMap.get(secPath);
   const subs = node ? node.children.filter((c) => c.dir) : [];
   return { total: files.length, docs, subs };
+}
+
+function projectSettingsEditor(root, settings, onSave) {
+  const form = el('form', 'project-settings-editor');
+  const titleLabel = el('label', 'description-label', 'Заголовок домашней страницы');
+  const title = el('input', 'project-title-input');
+  title.type = 'text';
+  title.value = settings.title || 'Навигация по документации';
+  title.required = true;
+  title.maxLength = 200;
+  titleLabel.appendChild(title);
+  form.appendChild(titleLabel);
+  const label = el('label', 'description-label', 'Описание проекта');
+  const input = el('textarea', 'description-input');
+  input.value = settings.description || '';
+  input.rows = 3;
+  input.maxLength = 2000;
+  input.placeholder = 'Для чего этот проект и что здесь искать';
+  label.appendChild(input);
+  form.appendChild(label);
+  const actions = el('div', 'description-actions');
+  const save = el('button', 'setup-btn', 'Сохранить');
+  save.type = 'submit';
+  const status = el('span', 'description-status');
+  status.setAttribute('role', 'status');
+  actions.appendChild(save);
+  actions.appendChild(status);
+  form.appendChild(actions);
+  form.onclick = (e) => e.stopPropagation();
+  form.onkeydown = (e) => e.stopPropagation();
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    save.disabled = true;
+    status.textContent = 'Сохраняю…';
+    try {
+      const result = await api('/api/project-settings', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: root || undefined, title: title.value, description: input.value }),
+      });
+      title.value = result.title;
+      input.value = result.description;
+      onSave(result);
+      status.textContent = 'Сохранено';
+    } catch (err) { status.textContent = 'Не удалось сохранить: ' + err.message; }
+    finally { save.disabled = false; }
+  };
+  return form;
 }
 
 function renderHome({ scroll = 0 } = {}) {
@@ -535,25 +609,31 @@ function renderHome({ scroll = 0 } = {}) {
   doc.textContent = '';
   const home = el('div', 'home');
   if (state.editing) home.classList.add('editing');
-  const cfg = state.config || { title: 'Навигация по документации', subtitle: '', sections: [] };
+  const cfg = state.config || { title: 'Навигация по документации', description: '', sections: [] };
 
   const head = el('div', 'home-head');
   const titleRow = el('div', 'home-title-row');
-  titleRow.appendChild(el('h1', null, cfg.title));
+  const heading = el('h1', null, cfg.title);
+  titleRow.appendChild(heading);
   const setup = el('button', 'setup-btn', state.editing ? 'Готово' : 'Настроить');
   setup.title = state.editing
     ? 'Выйти из настройки меню'
-    : 'Настроить состав меню: клик по разделу убирает его вниз, клик по папке внизу возвращает наверх';
+    : 'Настроить заголовок и описание проекта, разделы, папки и видимость файлов в корне';
   if (state.editing) setup.classList.add('active');
   setup.onclick = () => { state.editing = !state.editing; renderHome(); };
   titleRow.appendChild(setup);
   titleRow.appendChild(sortRow(() => renderHome({ scroll: $('#scroller').scrollTop }), { custom: 'Как настроено' }));
   head.appendChild(titleRow);
-  if (cfg.subtitle) head.appendChild(el('p', 'home-sub', cfg.subtitle));
+  if (state.editing) {
+    head.appendChild(projectSettingsEditor(state.root, cfg, (info) => {
+      Object.assign(state.config, info);
+      heading.textContent = info.title;
+    }));
+  } else if (cfg.description) head.appendChild(el('p', 'project-description', cfg.description));
   if (cfg.notice) head.appendChild(el('p', 'home-warn', cfg.notice));
   if (state.editing) {
     head.appendChild(el('p', 'home-hint',
-      'Клик по разделу убирает его вниз, клик по папке внизу поднимает в меню. Состав сразу пишется в docviewer.json.'));
+      'Клик по разделу убирает его вниз, клик по папке внизу поднимает в меню. Клик по файлу в корне скрывает его, повторный — возвращает. Меню сохраняется сразу, заголовок и описание — кнопкой «Сохранить».'));
   }
   home.appendChild(head);
 
@@ -562,7 +642,8 @@ function renderHome({ scroll = 0 } = {}) {
     home.appendChild(el('div', 'group-title', state.editing ? 'Избранное — клик убирает из списка' : 'Избранное'));
     const grid = el('div', 'file-tiles');
     for (const fav of favs) {
-      const tile = fileTile({ ...fav, dir: false });
+      const current = state.files.find((f) => f.path === fav.path);
+      const tile = fileTile({ ...fav, ...(current && { birthtime: current.birthtime, mtime: current.mtime }), dir: false });
       if (state.editing) {
         tile.classList.add('editable');
         tile.title = 'Убрать «' + cap(fav.title || fav.name) + '» из избранного';
@@ -598,6 +679,7 @@ function renderHome({ scroll = 0 } = {}) {
         tile.appendChild(subs);
       }
     }
+    if (sec.exists) tile.appendChild(artifactDates(state.dirMap.get(sec.path) || sec));
     if (state.editing) {
       tile.classList.add('editable');
       tile.appendChild(el('span', 'tile-mark', '↓'));
@@ -638,6 +720,25 @@ function renderHome({ scroll = 0 } = {}) {
     home.appendChild(row);
   }
 
+  const hiddenFiles = new Set(state.hiddenFiles);
+  const rootFiles = state.tree.filter((n) => !n.dir && (state.editing || !hiddenFiles.has(n.path)));
+  if (rootFiles.length) {
+    home.appendChild(el('div', 'home-rest-title', 'Файлы в корне'));
+    const grid = el('div', 'file-tiles');
+    for (const file of sortEntries(rootFiles, effSort('name'))) {
+      const tile = state.editing ? fileTile(file, () => toggleRootFile(file.path)) : fileTile(file);
+      if (state.editing) {
+        const hidden = hiddenFiles.has(file.path);
+        tile.classList.add('editable');
+        tile.classList.toggle('file-hidden', hidden);
+        tile.title = (hidden ? 'Показать «' : 'Скрыть «') + file.name + '» в меню';
+        tile.appendChild(el('div', 'ftile-visibility', hidden ? 'Скрыт · нажмите, чтобы показать' : 'Нажмите, чтобы скрыть'));
+      }
+      grid.appendChild(tile);
+    }
+    home.appendChild(grid);
+  }
+
   doc.appendChild(home);
   restoreScroll(scroll);
 }
@@ -676,7 +777,10 @@ function whenText(at) {
 }
 
 function wsTile(item, redraw) {
-  const tile = el('button', 'tile ws-tile');
+  const tile = el('div', 'tile ws-tile');
+  tile.setAttribute('role', 'button');
+  tile.tabIndex = 0;
+  tile.dataset.path = item.path;
   const top = el('div', 'tile-top');
   const apps = el('span', 'ws-apps');
   for (const src of item.sources) {
@@ -690,10 +794,16 @@ function wsTile(item, redraw) {
   top.appendChild(apps);
   top.appendChild(el('span', 'tile-title', cap(item.name)));
   tile.appendChild(top);
+  if (state.picking) {
+    tile.appendChild(projectSettingsEditor(item.path, item, (info) => {
+      Object.assign(item, info);
+    }));
+  } else if (item.description) tile.appendChild(el('div', 'tile-desc', item.description));
   const meta = el('div', 'tile-meta', shortPath(item.path));
   const when = whenText(item.at);
   if (when) meta.appendChild(el('span', 'ws-when', when));
   tile.appendChild(meta);
+  tile.appendChild(artifactDates(item));
 
   const star = el('button', 'ws-star' + (item.fav ? ' on' : ''), item.fav ? '★' : '☆');
   star.title = item.fav ? 'Убрать из списка проектов' : 'Добавить в список проектов';
@@ -719,6 +829,11 @@ function wsTile(item, redraw) {
   tile.onclick = async () => {
     if (state.picking) { await ws('hide', item.path); redraw(); return; }
     openProjectFolder(item);
+  };
+  tile.onkeydown = (e) => {
+    if (e.target !== tile || !['Enter', ' '].includes(e.key)) return;
+    e.preventDefault();
+    tile.click();
   };
   return tile;
 }
@@ -752,8 +867,19 @@ async function renderPicker({ refresh = false, keepScroll = false } = {}) {
   const add = el('button', 'setup-btn', '＋ Добавить папку');
   add.title = 'Выбрать папку, которой ещё нет ни в одном проекте';
   add.onclick = async () => {
-    const res = await api('/api/pickfolder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-    if (res.path) { toast('Добавлено: ' + shortPath(res.path)); renderPicker({ refresh: true, keepScroll: true }); }
+    try {
+      const res = await api('/api/pickfolder', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if (!res.path) return;
+      // Выбранная папка должна быть видна даже при прежнем поиске или фильтре избранного.
+      state.wsQuery = '';
+      state.wsFav = false;
+      localStorage.setItem('dv.wsfav', '0');
+      if (location.hash !== '#' + PICKER) return;
+      await renderPicker({ refresh: true });
+      const tile = [...$('#doc').querySelectorAll('.ws-tile')].find((n) => n.dataset.path === res.path);
+      if (tile) { tile.scrollIntoView({ block: 'center' }); tile.focus({ preventScroll: true }); }
+      toast('Добавлено: ' + shortPath(res.path));
+    } catch (err) { toast('Не удалось добавить папку: ' + err.message); }
   };
   row.appendChild(add);
   head.appendChild(row);
@@ -762,7 +888,7 @@ async function renderPicker({ refresh = false, keepScroll = false } = {}) {
   const search = document.createElement('input');
   search.type = 'search';
   search.className = 'ws-search';
-  search.placeholder = 'Поиск по имени или пути';
+  search.placeholder = 'Поиск по имени, пути или описанию';
   search.value = state.wsQuery;
   search.autocomplete = 'off';
   search.spellcheck = false;
@@ -788,7 +914,7 @@ async function renderPicker({ refresh = false, keepScroll = false } = {}) {
   head.appendChild(tools);
 
   head.appendChild(el('p', 'home-sub', 'Папки, с которыми вы работали в Claude Code, Codex, Cursor и VS Code. ' +
-    'Звёздочка добавляет папку в список проектов наверху, «Настроить» убирает лишние в подвал.'));
+    'Звёздочка добавляет папку в список проектов наверху, «Настроить» позволяет менять заголовки и описания и убирать лишние папки в подвал.'));
   home.appendChild(head);
   const list = el('div', 'ws-list');
   home.appendChild(list);
@@ -814,7 +940,7 @@ async function renderPicker({ refresh = false, keepScroll = false } = {}) {
     const needle = state.wsQuery.trim().toLowerCase();
     const found = sortEntries((state.wsItems || [])
       .filter((it) => !state.wsFav || it.fav)
-      .filter((it) => !needle || it.name.toLowerCase().includes(needle) || shortPath(it.path).toLowerCase().includes(needle)),
+      .filter((it) => !needle || [it.name, it.title || '', shortPath(it.path), it.description || ''].some((s) => s.toLowerCase().includes(needle))),
     effSort('date'));
     const shown = found.filter((it) => !it.hidden);
     const hidden = found.filter((it) => it.hidden);
@@ -829,10 +955,20 @@ async function renderPicker({ refresh = false, keepScroll = false } = {}) {
 
     if (hidden.length) {
       list.appendChild(el('div', 'group-title', 'Остальные папки'));
+      if (state.picking) {
+        const grid = el('div', 'tiles');
+        for (const item of hidden) {
+          const tile = wsTile(item, reload);
+          tile.onclick = async () => { await ws('show', item.path); reload(); };
+          grid.appendChild(tile);
+        }
+        list.appendChild(grid);
+        return;
+      }
       const chips = el('div', 'chips');
       for (const item of hidden) {
         const chip = el('button', 'chip', cap(item.name));
-        chip.title = shortPath(item.path);
+        chip.title = [shortPath(item.path), item.description].filter(Boolean).join('\n');
         chip.onclick = async () => {
           if (state.picking) { await ws('show', item.path); reload(); return; }
           openProjectFolder(item);
@@ -1250,7 +1386,7 @@ async function openPath(p, opts = {}) {
 
 function basename(p) { return p.split('/').pop(); }
 
-function fileTile(entry) {
+function fileTile(entry, activate = () => navigate(entry.path)) {
   const tile = el('div', 'ftile');
   tile.setAttribute('role', 'button');
   tile.tabIndex = 0;
@@ -1266,20 +1402,24 @@ function fileTile(entry) {
     // названия нет — имя файла становится первой строкой, вторая не выводится
     const first = el('div', 'ftile-title');
     first.appendChild(el('span', 'fname', cap(nameNoExt)));
-    if (extLabel) first.appendChild(el('span', 'ext', ' ' + extLabel));
+    if (extLabel) {
+      const ext = el('span', 'ext', ' ' + extLabel);
+      ext.style.cssText = 'font-family: var(--mono); font-size: 11.5px; font-weight: 400; color: var(--fg-dim)';
+      first.appendChild(ext);
+    }
     first.style.display = 'flex';
     first.style.alignItems = 'baseline';
     first.style.gap = '6px';
-    first.querySelector('.ext').style.cssText = 'font-family: var(--mono); font-size: 11.5px; font-weight: 400; color: var(--fg-dim)';
     tile.appendChild(first);
   }
   const copy = el('button', 'ftile-copy', '⧉');
   copy.title = 'Копировать полный путь: ' + entry.path;
   copy.onclick = (e) => { e.stopPropagation(); copyPath(entry.path); };
   tile.appendChild(copy);
+  tile.appendChild(artifactDates(entry));
 
-  tile.onclick = () => navigate(entry.path);
-  tile.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(entry.path); } };
+  tile.onclick = activate;
+  tile.onkeydown = (e) => { if (e.target === tile && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); activate(); } };
   return tile;
 }
 
@@ -1290,11 +1430,13 @@ function folderTile(entry) {
   top.appendChild(el('span', 'tile-title', cap(entry.name)));
   tile.appendChild(top);
   tile.appendChild(el('div', 'tile-meta', `${entry.path}/ · ${docsWord(entry.docs)} · ${filesWord(entry.files)}`));
+  tile.appendChild(artifactDates(entry));
   tile.onclick = () => navigate(entry.path);
   return tile;
 }
 
 async function openDir(p, { scroll = 0, keepScroll = false } = {}) {
+  const view = location.hash;
   const prevScroll = $('#scroller').scrollTop;
   state.current = p;
   localStorage.setItem(key('last'), p);
@@ -1308,7 +1450,11 @@ async function openDir(p, { scroll = 0, keepScroll = false } = {}) {
 
   let data;
   try { data = await api('/api/dir?p=' + encodeURIComponent(p)); }
-  catch (err) { doc.appendChild(el('div', 'empty', 'Папка недоступна: ' + err.message)); return; }
+  catch (err) {
+    if (location.hash === view) doc.appendChild(el('div', 'empty', 'Папка недоступна: ' + err.message));
+    return;
+  }
+  if (location.hash !== view) return;
 
   const head = el('div', 'dir-head');
   const up = el('button', 'up-btn', data.parent ? '↑ ' + cap(basename(data.parent)) : '↑ Меню разделов');
@@ -1411,7 +1557,7 @@ async function gotoFromClipboard() {
 // у разделов меню своего имени нет, поэтому там берётся подпись.
 const sortLabel = (it) => it.name || it.title || it.label || '';
 const sortName = (a, b) => sortLabel(a).localeCompare(sortLabel(b), 'ru');
-const sortDate = (a, b) => ((b.mtime || b.at || 0) - (a.mtime || a.at || 0)) || sortName(a, b);
+const sortDate = (a, b) => ((b.at ?? b.mtime ?? 0) - (a.at ?? a.mtime ?? 0)) || sortName(a, b);
 // «Как настроено» есть только в меню разделов; в остальных видах у каждого свой порядок
 // по умолчанию: в папке — по имени, в выборе проекта — по дате.
 const effSort = (fallback) => (state.sort === 'custom' ? fallback : state.sort);
@@ -1486,6 +1632,7 @@ function restoreScroll(top) {
 }
 
 async function openFile(p, { anchor = null, keepScroll = false, scroll = 0 } = {}) {
+  const view = location.hash;
   const doc = $('#doc');
   const scroller = $('#scroller');
   const prevScroll = scroller.scrollTop;
@@ -1495,6 +1642,7 @@ async function openFile(p, { anchor = null, keepScroll = false, scroll = 0 } = {
   let data;
   try { data = await api('/api/file?p=' + encodeURIComponent(p)); }
   catch (err) {
+    if (location.hash !== view) return;
     state.current = p;
     renderCrumbs(p);
     doc.textContent = '';
@@ -1503,6 +1651,7 @@ async function openFile(p, { anchor = null, keepScroll = false, scroll = 0 } = {
     doc.appendChild(el('div', 'empty', gone ? 'Файл удалён или переименован: ' + p : 'Не удалось открыть: ' + err.message));
     return;
   }
+  if (location.hash !== view) return;
 
   // показать такой файл интерфейс не может — отдаём системе и оставляем страницу как была
   if (data.binary && !IMG_EXT.has(ext) && ext !== '.pdf') {
@@ -1777,10 +1926,26 @@ function connectEvents() {
   es.onmessage = async (ev) => {
     let msg; try { msg = JSON.parse(ev.data); } catch { return; }
     if (msg.type === 'projects') { await refreshProjects(); return; }
+    if (msg.type === 'project-settings') {
+      const info = { title: msg.title, description: msg.description };
+      for (const item of state.wsItems || []) if (item.path === msg.root) Object.assign(item, info);
+      if (state.root === msg.root && state.config) Object.assign(state.config, info);
+      if (location.hash === '#' + PICKER) {
+        if (!state.picking) await renderPicker({ keepScroll: true });
+      } else if (state.root === msg.root && !state.current && !state.editing) {
+        renderHome({ scroll: $('#scroller').scrollTop });
+      }
+      return;
+    }
     if (msg.type !== 'change') return;
     if (msg.project && PROJECT && msg.project !== PROJECT) return;
+    const view = location.hash;
     if (msg.paths.some((p) => p === 'docviewer.json')) await loadConfig();
     await loadTree();
+    // У выбора проекта тоже current === null. Обновляем данные, сохраняя открытый экран;
+    // запрос дерева мог завершиться уже после перехода пользователя в другое место.
+    if (view === '#' + PICKER || location.hash !== view) return;
+    if (state.editing && !state.current) return; // ввод описания сохраняем до явной отправки
     if (!state.current) { renderHome({ scroll: $('#scroller').scrollTop }); return; }
     if (state.dirSet.has(state.current)) {
       // открыта папка — перерисовываем её список, если изменилось что-то внутри

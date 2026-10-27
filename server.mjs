@@ -8,6 +8,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { loadProjects, workspaceList as catalogWorkspaces, expand, shortHome,
+  readWorkspacesFile, writeWorkspacesFile, addWorkspace } from './project-catalog.mjs';
+import { readSettings, readProjectInfo, writeSettings, serializeSettings, validateDescription, validateTitle, DEFAULT_TITLE } from './project-settings.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const PORT_BASE = Number(process.env.DOCVIEWER_PORT || 4179);
@@ -19,54 +22,10 @@ const OPEN_BROWSER = process.env.DOCVIEWER_NO_OPEN !== '1';
 // id из имени: буквы и цифры любых алфавитов, иначе кириллица схлопывается в «p»
 // и проекты с русскими названиями сталкиваются одним id. Коллизии разных папок
 // с одинаковым именем снимает суффикс в loadProjects.
-const slug = (s) => s.toLowerCase().normalize('NFC').replace(/[^\p{L}\p{N}\p{M}]+/gu, '-').replace(/^-+|-+$/g, '') || 'p';
-// macOS отдаёт пути в NFD («найм» из двух кодпоинтов), а в конфигах путь лежит в NFC:
-// строки разные, папка одна — все пути, прошедшие через expand, сравниваем в NFC.
-const norm = (p) => p.normalize('NFC');
-const expand = (p) => norm(path.resolve(p.startsWith('~') ? path.join(os.homedir(), p.slice(1)) : p));
-
-function loadProjects() {
-  let raw = [];
-  const args = process.argv.slice(2).filter((a) => !a.startsWith('-'));
-  if (args.length) raw = args;
-  else if (process.env.DOCVIEWER_ROOTS) raw = process.env.DOCVIEWER_ROOTS.split(':').filter(Boolean);
-  else if (process.env.DOCVIEWER_ROOT) raw = [process.env.DOCVIEWER_ROOT];
-  else {
-    try {
-      const cfg = JSON.parse(fs.readFileSync(path.join(HERE, 'projects.json'), 'utf8'));
-      raw = Array.isArray(cfg.projects) ? cfg.projects : [];
-    } catch { raw = [process.cwd()]; }
-  }
-  const out = [];
-  const roots = new Set(), ids = new Set();
-  for (const item of raw) {
-    const entry = typeof item === 'string' ? { path: item } : item;
-    if (!entry || !entry.path) continue;
-    const root = expand(entry.path);
-    if (!fs.existsSync(root)) {
-      console.error(`Пропускаю проект — папки нет: ${root}`);
-      continue;
-    }
-    if (roots.has(root)) continue;   // одна папка под двумя начертаниями пути (NFC и NFD)
-    roots.add(root);
-    const name = entry.name || path.basename(root);
-    // fav: false — проект открывается, но в списке наверху не показывается
-    let id = entry.id || slug(name);
-    for (let n = 2; ids.has(id); n++) id = `${entry.id || slug(name)}-${n}`;
-    ids.add(id);
-    out.push({ id, name, root, raw: entry.path, fav: entry.fav !== false });
-  }
-  if (!out.length) {
-    const root = process.cwd();
-    out.push({ id: slug(path.basename(root)), name: path.basename(root), root });
-  }
-  return out;
-}
 
 let PROJECTS = loadProjects();
 const projectById = (id) => PROJECTS.find((p) => p.id === id) || PROJECTS[0];
 const PROJECTS_FILE = path.join(HERE, 'projects.json');
-const shortHome = (p) => (p.startsWith(os.homedir() + path.sep) ? '~' + p.slice(os.homedir().length) : p);
 
 // Список проектов правится прямо из интерфейса, поэтому перечитываем его на ходу:
 // новые папки получают наблюдателя, а клиенты узнают об изменении через SSE.
@@ -149,6 +108,7 @@ function safeAbs(root, rel) {
   return abs;
 }
 const relOf = (root, abs) => path.relative(root, abs) || '.';
+const fileDates = (st) => ({ birthtime: st?.birthtimeMs > 0 ? st.birthtimeMs : null, mtime: st?.mtimeMs || 0 });
 
 // --- дерево файлов -----------------------------------------------------------
 async function buildTree(root, dir = root) {
@@ -162,12 +122,15 @@ async function buildTree(root, dir = root) {
     if (SKIP_REL.has(relOf(root, abs))) continue;
     if (e.isDirectory()) {
       const children = await buildTree(root, abs);
-      out.push({ name: e.name, path: relOf(root, abs), dir: true, children });
+      const st = await fsp.stat(abs).catch(() => null);
+      out.push({ name: e.name, path: relOf(root, abs), dir: true, children, ...fileDates(st) });
     } else if (e.isFile()) {
       const st = await fsp.stat(abs).catch(() => null);   // дата нужна для сортировки списков
       out.push({
         name: e.name, path: relOf(root, abs), dir: false,
-        ext: path.extname(e.name).toLowerCase(), mtime: st ? st.mtimeMs : 0,
+        ext: path.extname(e.name).toLowerCase(), ...fileDates(st),
+        // Файлы корня показаны плитками в меню, с теми же названиями, что и внутри папок.
+        ...(dir === root && /\.mdc?$/i.test(e.name) ? { title: await docTitle(abs, st?.mtimeMs) } : {}),
       });
     }
   }
@@ -177,6 +140,9 @@ async function buildTree(root, dir = root) {
 
 // --- конфигурация разделов (docviewer.json в корне) -------------------------
 const CONFIG_FILE = 'docviewer.json';
+const rootFilePaths = (paths) => [...new Set((Array.isArray(paths) ? paths : [])
+  .filter((p) => typeof p === 'string').map((p) => p.replace(/^\.\//, ''))
+  .filter((p) => p && p !== '.' && p !== '..' && !p.includes('/')))];
 
 async function topLevelSections(root) {
   let entries = [];
@@ -191,9 +157,10 @@ async function readConfig(project) {
   const root = project.root;
   let cfg, source = 'file', notice = null;   // notice — пояснение, а не сбой запроса
   try {
-    cfg = JSON.parse(await fsp.readFile(path.join(root, CONFIG_FILE), 'utf8'));
+    cfg = await readSettings(root);
+    if (!cfg) throw Object.assign(new Error('файла нет'), { code: 'ENOENT' });
   } catch (err) {
-    cfg = { title: 'Навигация по документации', subtitle: '', sections: await topLevelSections(root) };
+    cfg = { title: DEFAULT_TITLE, description: '', sections: await topLevelSections(root) };
     source = 'default';
     notice = err.code === 'ENOENT'
       ? `${CONFIG_FILE} в корне проекта нет — показаны все папки верхнего уровня`
@@ -205,14 +172,15 @@ async function readConfig(project) {
     const item = typeof raw === 'string' ? { path: raw } : raw;
     if (!item || typeof item.path !== 'string' || !item.path.trim()) continue;
     const rel = item.path.replace(/^\.?\//, '').replace(/\/$/, '');
-    let exists = false;
-    try { exists = (await fsp.stat(safeAbs(root, rel))).isDirectory(); } catch { exists = false; }
+    let exists = false, st = null;
+    try { st = await fsp.stat(safeAbs(root, rel)); exists = st.isDirectory(); } catch { exists = false; }
     const entry = {
       path: rel,
       title: item.title || rel,
       icon: item.icon || '▸',
       description: item.description || '',
       exists,
+      ...fileDates(st),
     };
     (item.hidden ? hidden : sections).push(entry);
   }
@@ -220,23 +188,23 @@ async function readConfig(project) {
   for (const raw of Array.isArray(cfg.favorites) ? cfg.favorites : []) {
     const rel = String(raw || '').replace(/^\.?\//, '');
     if (!rel) continue;
-    let exists = false, title = null, mtime = 0;
+    let exists = false, title = null, st = null;
     try {
       const abs = safeAbs(root, rel);
-      const st = await fsp.stat(abs);
+      st = await fsp.stat(abs);
       exists = st.isFile();
-      mtime = st.mtimeMs;
-      if (exists && /\.mdc?$/.test(rel)) title = await docTitle(abs, mtime);
+      if (exists && /\.mdc?$/.test(rel)) title = await docTitle(abs, st.mtimeMs);
     } catch { exists = false; }
-    favorites.push({ path: rel, name: path.basename(rel), ext: path.extname(rel).toLowerCase(), title, exists });
+    favorites.push({ path: rel, name: path.basename(rel), ext: path.extname(rel).toLowerCase(), title, exists, ...fileDates(st) });
   }
 
   return {
     project: project.id,
-    title: cfg.title || 'Навигация по документации',
-    subtitle: cfg.subtitle || '',
+    title: cfg.title || DEFAULT_TITLE,
+    description: typeof cfg.description === 'string' ? cfg.description : '',
     sections,
     hidden,
+    hiddenFiles: rootFilePaths(cfg.hiddenFiles),
     favorites,
     source,
     notice,
@@ -246,51 +214,54 @@ async function readConfig(project) {
 
 // Запись состава меню обратно в docviewer.json проекта.
 // Порядок и состав задаёт клиент, а подписи, значки и описания уже известных разделов сохраняем.
-async function writeConfig(project, paths) {
+async function writeConfig(project, { sections: paths, hiddenFiles, description, title }) {
   const root = project.root;
-  const file = path.join(root, CONFIG_FILE);
-  let cfg = {};
-  try { cfg = JSON.parse(await fsp.readFile(file, 'utf8')); } catch { cfg = {}; }
+  const cfg = await readSettings(root) || { sections: await topLevelSections(root) };
 
-  const known = new Map();
-  for (const raw of Array.isArray(cfg.sections) ? cfg.sections : []) {
-    const item = typeof raw === 'string' ? { path: raw } : raw;
-    if (item && typeof item.path === 'string') known.set(item.path.replace(/\/$/, ''), item);
-  }
+  if (hiddenFiles !== undefined && !Array.isArray(hiddenFiles)) throw new Error('hiddenFiles должен быть массивом');
+  if (description !== undefined) cfg.description = validateDescription(description);
+  if (title !== undefined) cfg.title = validateTitle(title);
 
-  const sections = [];
-  const visible = new Set();
-  for (const rawPath of Array.isArray(paths) ? paths : []) {
-    const rel = String(rawPath || '').replace(/^\.?\//, '').replace(/\/$/, '');
-    if (!rel || visible.has(rel)) continue;
-    const abs = safeAbs(root, rel);                       // за пределы проекта не выпускаем
-    let isDir = false;
-    try { isDir = (await fsp.stat(abs)).isDirectory(); } catch { isDir = false; }
-    if (!isDir) continue;
-    visible.add(rel);
-    const { hidden: _drop, ...entry } = known.get(rel) || { path: rel, title: path.basename(rel) };
-    sections.push(entry);
-  }
-  // убранные из меню сохраняем с пометкой: вернутся со своим названием, значком и описанием
-  for (const [rel, item] of known) {
-    if (!visible.has(rel)) sections.push({ ...item, hidden: true });
+  if (paths !== undefined) {
+    const known = new Map();
+    for (const raw of Array.isArray(cfg.sections) ? cfg.sections : []) {
+      const item = typeof raw === 'string' ? { path: raw } : raw;
+      if (item && typeof item.path === 'string') known.set(item.path.replace(/\/$/, ''), item);
+    }
+
+    const sections = [];
+    const visible = new Set();
+    for (const rawPath of Array.isArray(paths) ? paths : []) {
+      const rel = String(rawPath || '').replace(/^\.?\//, '').replace(/\/$/, '');
+      if (!rel || visible.has(rel)) continue;
+      const abs = safeAbs(root, rel);                       // за пределы проекта не выпускаем
+      let isDir = false;
+      try { isDir = (await fsp.stat(abs)).isDirectory(); } catch { isDir = false; }
+      if (!isDir) continue;
+      visible.add(rel);
+      const { hidden: _drop, ...entry } = known.get(rel) || { path: rel, title: path.basename(rel) };
+      sections.push(entry);
+    }
+    // убранные из меню сохраняем с пометкой: вернутся со своим названием, значком и описанием
+    for (const [rel, item] of known) {
+      if (!visible.has(rel)) sections.push({ ...item, hidden: true });
+    }
+    cfg.sections = sections;
   }
 
   const out = {
-    title: cfg.title || 'Навигация по документации',
-    ...(cfg.subtitle ? { subtitle: cfg.subtitle } : {}),
-    ...Object.fromEntries(Object.entries(cfg).filter(([k]) => !['title', 'subtitle', 'sections'].includes(k))),
-    sections,
+    title: cfg.title || DEFAULT_TITLE,
+    ...Object.fromEntries(Object.entries(cfg).filter(([k]) => !['title', 'sections'].includes(k))),
+    sections: cfg.sections || [],
+    ...(hiddenFiles !== undefined ? { hiddenFiles: rootFilePaths(hiddenFiles) } : {}),
   };
-  await fsp.writeFile(file, JSON.stringify(out, null, 2) + '\n', 'utf8');
+  await writeSettings(root, out);
   return readConfig(project);
 }
 
 // Избранные файлы живут в том же docviewer.json проекта.
 async function writeFavorite(project, rel, on) {
-  const file = path.join(project.root, CONFIG_FILE);
-  let cfg = {};
-  try { cfg = JSON.parse(await fsp.readFile(file, 'utf8')); } catch { cfg = {}; }
+  const cfg = await readSettings(project.root) || {};
 
   const clean = String(rel || '').replace(/^\.?\//, '');
   if (!clean) throw new Error('не указан файл');
@@ -301,7 +272,7 @@ async function writeFavorite(project, rel, on) {
 
   const out = { ...cfg, favorites: next };
   if (!Array.isArray(out.sections)) out.sections = [];
-  await fsp.writeFile(file, JSON.stringify(out, null, 2) + '\n', 'utf8');
+  await writeSettings(project.root, out);
   return readConfig(project);
 }
 
@@ -370,16 +341,15 @@ async function listDir(project, rel) {
         }
       }
       const st = await fsp.stat(abs).catch(() => null);
-      out.push({ name: e.name, path: childRel, dir: true, files, docs, mtime: st ? st.mtimeMs : 0 });
+      out.push({ name: e.name, path: childRel, dir: true, files, docs, ...fileDates(st) });
     } else if (e.isFile()) {
       const ext = path.extname(e.name).toLowerCase();
-      let title = null, mtime = 0;
+      let title = null, st = null;
       try {
-        const st = await fsp.stat(abs);
-        mtime = st.mtimeMs;
-        if (ext === '.md' || ext === '.mdc') title = await docTitle(abs, mtime);
+        st = await fsp.stat(abs);
+        if (ext === '.md' || ext === '.mdc') title = await docTitle(abs, st.mtimeMs);
       } catch { /* нечитаемый файл */ }
-      out.push({ name: e.name, path: childRel, dir: false, ext, title, mtime });
+      out.push({ name: e.name, path: childRel, dir: false, ext, title, ...fileDates(st) });
     }
   }
   out.sort((a, b) => (a.dir === b.dir ? a.name.localeCompare(b.name, 'ru') : a.dir ? -1 : 1));
@@ -557,141 +527,8 @@ function openNative(app, abs, root) {
 // Собираем из того, что приложения уже хранят у себя: список проектов Claude Code,
 // рабочие папки окон Cursor и VS Code, cwd сессий Codex (ChatGPT). Плюс папки,
 // добавленные вручную, и список убранных в подвал — они лежат в workspaces.json.
-const HOME = os.homedir();
-const WORKSPACES_FILE = path.join(HERE, 'workspaces.json');
-const WS_TTL = 20000;
-let wsCache = { at: 0, items: [] };
-
-const readJson = async (file) => { try { return JSON.parse(await fsp.readFile(file, 'utf8')); } catch { return null; } };
-const claudeSlug = (p) => p.replace(/[^A-Za-z0-9]/g, '-');
-
-async function readWorkspacesFile() {
-  const data = (await readJson(WORKSPACES_FILE)) || {};
-  return { hidden: Array.isArray(data.hidden) ? data.hidden : [], extra: Array.isArray(data.extra) ? data.extra : [] };
-}
-const writeWorkspacesFile = (data) => fsp.writeFile(WORKSPACES_FILE, JSON.stringify(data, null, 2) + '\n', 'utf8');
-
-async function scanClaude(add) {
-  const cfg = await readJson(path.join(HOME, '.claude.json'));
-  for (const p of Object.keys((cfg && cfg.projects) || {})) {
-    const st = await fsp.stat(path.join(HOME, '.claude', 'projects', claudeSlug(p))).catch(() => null);
-    add(p, 'claude', st ? st.mtimeMs : 0);
-  }
-}
-
-async function scanEditor(appDir, source, add) {
-  const base = path.join(HOME, 'Library/Application Support', appDir, 'User/workspaceStorage');
-  for (const dir of await fsp.readdir(base).catch(() => [])) {
-    const info = await readJson(path.join(base, dir, 'workspace.json'));
-    const uri = info && info.folder;
-    if (!uri || !uri.startsWith('file://')) continue;
-    const st = await fsp.stat(path.join(base, dir)).catch(() => null);
-    add(decodeURIComponent(uri.slice('file://'.length)), source, st ? st.mtimeMs : 0);
-  }
-}
-
-// Проекты приложения Codex лежат в его базе `~/.codex/state_<N>.sqlite`: таблицы
-// `projects` и `project_roots`. Берём именно их, а не рабочие папки разговоров: чат без
-// проекта Codex заводит в отдельной папке `~/Documents/Codex/<дата>/<название чата>`,
-// и раньше список заполняли как раз они — по папке на чат.
-// Дата проекта в базе одна на всех (её проставила миграция), поэтому берём дату последнего
-// разговора в этой папке: `threads.updated_at`, секунды.
-async function scanCodex(add) {
-  let sqlite;
-  try { sqlite = await import('node:sqlite'); } catch { return; }   // сборка Node без node:sqlite
-  const dir = path.join(HOME, '.codex');
-  const files = (await fsp.readdir(dir).catch(() => [])).filter((f) => /^state_\d+\.sqlite$/.test(f));
-  if (!files.length) return;
-  // имя файла версионное: state_6 новее state_5
-  files.sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
-  let db = null;
-  try {
-    db = new sqlite.DatabaseSync(path.join(dir, files[files.length - 1]), { readOnly: true });
-    const lastUse = new Map();
-    for (const row of db.prepare('SELECT cwd, MAX(updated_at) AS at FROM threads GROUP BY cwd').all()) {
-      lastUse.set(row.cwd, Number(row.at) * 1000);
-    }
-    const sql = 'SELECT r.path AS path, p.updated_at_ms AS at FROM project_roots r JOIN projects p ON p.id = r.project_id';
-    for (const row of db.prepare(sql).all()) add(row.path, 'codex', lastUse.get(row.path) || Number(row.at) || 0);
-  } catch (err) {
-    console.error('Codex: база проектов не прочиталась:', err.message);
-  } finally {
-    try { if (db) db.close(); } catch { /* уже закрыта */ }
-  }
-}
-
-async function collectWorkspaces() {
-  if (Date.now() - wsCache.at < WS_TTL) return wsCache.items;
-  const found = new Map();
-  const seenDir = new Map();
-  const isDir = async (p) => {
-    if (seenDir.has(p)) return seenDir.get(p);
-    const st = await fsp.stat(p).catch(() => null);
-    const ok = !!st && st.isDirectory();
-    seenDir.set(p, ok);
-    return ok;
-  };
-  const pending = [];
-  // Служебные копии не проекты: временные папки Claude и рабочие копии агентов
-  const JUNK = ['/Library/Application Support/Claude/scratch-workspaces/', '/.claude/worktrees/', '/.git/',
-    '/Documents/Codex/'];   // папки, которые Codex заводит под чат без проекта
-  const add = (raw, source, at) => {
-    if (!raw || typeof raw !== 'string') return;
-    const abs = norm(path.resolve(raw.replace(/\/$/, '')));
-    if (abs === '/' || abs === HOME) return;               // корень диска и домашняя папка — не проекты
-    if (JUNK.some((junk) => abs.includes(junk))) return;
-    pending.push({ abs, source, at: at || 0 });
-  };
-  await Promise.all([
-    scanClaude(add),
-    scanCodex(add),
-    scanEditor('Cursor', 'cursor', add),
-    scanEditor('Code', 'vscode', add),
-  ]);
-  for (const { abs, source, at } of pending) {
-    if (!(await isDir(abs))) continue;                     // папку могли удалить или переименовать
-    const item = found.get(abs) || { path: abs, name: path.basename(abs), sources: [], at: 0 };
-    if (!item.sources.includes(source)) item.sources.push(source);
-    item.at = Math.max(item.at, at);
-    found.set(abs, item);
-  }
-  wsCache = { at: Date.now(), items: [...found.values()] };
-  return wsCache.items;
-}
-
-async function workspaceList() {
-  const items = (await collectWorkspaces()).map((it) => ({ ...it, sources: [...it.sources] }));
-  const { hidden, extra } = await readWorkspacesFile();
-  const byPath = new Map(items.map((it) => [it.path, it]));
-  for (const raw of extra) {
-    const abs = expand(raw);
-    const st = await fsp.stat(abs).catch(() => null);
-    if (!st || !st.isDirectory()) continue;
-    const item = byPath.get(abs) || { path: abs, name: path.basename(abs), sources: [], at: st.mtimeMs };
-    item.manual = true;
-    byPath.set(abs, item);
-  }
-  for (const project of PROJECTS) {
-    const item = byPath.get(path.resolve(project.root));
-    if (item) continue;
-    byPath.set(path.resolve(project.root), {
-      path: path.resolve(project.root), name: project.name, sources: [], at: 0, manual: true,
-    });
-  }
-  const hiddenSet = new Set(hidden.map(expand));
-  const list = [...byPath.values()].map((it) => {
-    const project = PROJECTS.find((p) => path.resolve(p.root) === it.path);
-    return {
-      ...it,
-      hidden: hiddenSet.has(it.path),
-      listed: !!project,
-      fav: !!project && project.fav,
-      project: project ? project.id : '',
-    };
-  });
-  list.sort((a, b) => (b.fav - a.fav) || (b.at - a.at) || a.name.localeCompare(b.name, 'ru'));
-  return list;
-}
+// Источники и описания общие с MCP: project-catalog.mjs.
+const workspaceList = () => catalogWorkspaces(PROJECTS);
 
 // --- переход по абсолютному пути ---------------------------------------------
 // Корень выбираем по очереди: сначала избранные проекты, потом всё, что не убрано в подвал,
@@ -867,7 +704,31 @@ const server = http.createServer(async (req, res) => {
     const project = projectById(url.searchParams.get('project'));
 
     if (p === '/api/projects') {
-      return json(res, 200, { projects: PROJECTS.map(({ id, name, root, fav }) => ({ id, name, root, fav })) });
+      const projects = await Promise.all(PROJECTS.map(async ({ id, name, root, fav }) =>
+        ({ id, name, root, fav, ...await readProjectInfo(root) })));
+      return json(res, 200, { projects });
+    }
+
+    if (p === '/api/project-settings' && req.method === 'POST') {
+      const body = await readBody(req);
+      const root = expand(String(body.path || project.root));
+      if (!PROJECTS.some((pr) => pr.root === root) && !(await workspaceList()).some((it) => it.path === root)) {
+        return json(res, 400, { error: 'Неизвестный проект' });
+      }
+      if (!Object.hasOwn(body, 'title') && !Object.hasOwn(body, 'description')) {
+        return json(res, 400, { error: 'Не переданы заголовок или описание' });
+      }
+      const changes = {
+        ...(Object.hasOwn(body, 'title') ? { title: validateTitle(body.title) } : {}),
+        ...(Object.hasOwn(body, 'description') ? { description: validateDescription(body.description) } : {}),
+      };
+      await serializeSettings(root, async () => {
+        const cfg = await readSettings(root) || { sections: await topLevelSections(root) };
+        await writeSettings(root, { ...cfg, ...changes });
+      });
+      const info = await readProjectInfo(root);
+      broadcast({ type: 'project-settings', root, ...info });
+      return json(res, 200, info);
     }
 
     if (p === '/api/workspaces' && req.method === 'POST') {
@@ -888,10 +749,8 @@ const server = http.createServer(async (req, res) => {
           file.hidden = drop(file.hidden);
           break;
         case 'add': {
-          const st = await fsp.stat(abs).catch(() => null);
-          if (!st || !st.isDirectory()) return json(res, 400, { error: 'папки нет: ' + abs });
-          file.extra = [...drop(file.extra), shortHome(abs)];
-          break;
+          await addWorkspace(abs);
+          return json(res, 200, { ok: true });
         }
         case 'remove':
           file.extra = drop(file.extra);
@@ -924,16 +783,14 @@ const server = http.createServer(async (req, res) => {
         proc.on('exit', (code) => resolve(code === 0 ? out.trim() : ''));
       });
       if (!chosen) return json(res, 200, { path: '' });     // отменили выбор
-      const file = await readWorkspacesFile();
-      const abs = expand(chosen);   // osascript отдаёт путь в NFD — приводим к NFC, как везде
-      file.extra = [...file.extra.filter((x) => expand(x) !== abs), shortHome(abs)];
-      await writeWorkspacesFile(file);
+      const abs = await addWorkspace(chosen);   // osascript отдаёт путь в NFD — нормализуем в addWorkspace
       return json(res, 200, { path: abs });
     }
 
     if (p === '/api/meta') {
       return json(res, 200, {
         root: project.root, name: project.name, project: project.id, host: os.hostname(), home: os.homedir(),
+        ...await readProjectInfo(project.root),
         assets: ASSET_ORIGIN,
         projects: PROJECTS.map(({ id, name, fav }) => ({ id, name, fav })),
       });
@@ -949,12 +806,12 @@ const server = http.createServer(async (req, res) => {
 
     if (p === '/api/favorite' && req.method === 'POST') {
       const body = await readBody(req);
-      return json(res, 200, await writeFavorite(project, body.path, body.on !== false));
+      return json(res, 200, await serializeSettings(project.root, () => writeFavorite(project, body.path, body.on !== false)));
     }
 
     if (p === '/api/config' && req.method === 'POST') {
       const body = await readBody(req);
-      return json(res, 200, await writeConfig(project, body.sections));
+      return json(res, 200, await serializeSettings(project.root, () => writeConfig(project, body)));
     }
 
     if (p === '/api/config') return json(res, 200, await readConfig(project));
